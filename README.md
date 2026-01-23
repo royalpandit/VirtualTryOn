@@ -1,50 +1,158 @@
-# Welcome to your Expo app 👋
+# VirtualTryOn - Complete Virtual Try-On System
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A complete virtual try-on system consisting of a FastAPI backend (CatVTON) and an Expo React Native mobile app. This system allows users to try on clothes virtually using AI-powered diffusion models.
 
-## Get started
+## Repository Structure
 
-1. Install dependencies
+This repository contains both the backend and frontend components:
 
-   ```bash
-   npm install
-   ```
+- **Backend (CatVTON)**: FastAPI service for virtual try-on inference
+- **Frontend (VirtualTryOn)**: Expo React Native mobile application
 
-2. Start the app
+## Backend - CatVTON Production API
 
-   ```bash
-   npx expo start
-   ```
+A production-ready FastAPI service for virtual try-on using diffusion models. This system performs high-quality garment try-on with GPU acceleration and can run fully offline after initial model download.
 
-In the output, you'll find options to open the app in a
+### Features
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+- FastAPI based REST API for virtual try-on
+- GPU accelerated inference using CUDA
+- Fully offline capable after first model download
+- Production ready with proper error handling and timeouts
+- Rate limiting and security checks
+- Intelligent caching for improved performance
+- Optimized memory usage for RTX 4050 (6GB VRAM)
+- Single inference lock to prevent GPU OOM
+- Automatic image resizing for memory safety
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+### Requirements
 
-## Get a fresh project
+- Python 3.9 or higher
+- NVIDIA GPU with CUDA support (minimum 6GB VRAM)
+- PyTorch with CUDA
+- All dependencies listed in requirements.txt
 
-When you're ready, run:
+### Installation
 
+1. Install dependencies:
 ```bash
-npm run reset-project
+pip install -r requirements.txt
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+2. Run the API server:
+```bash
+python app_fastapi.py
+```
 
-## Learn more
+The server will start on http://0.0.0.0:8000. On first run, models will be automatically downloaded from HuggingFace (requires internet connection). Subsequent runs can work offline as models are cached locally.
 
-To learn more about developing your project with Expo, look at the following resources:
+### API Endpoints
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+- `GET /health` - Health check endpoint
+- `POST /api/try-on` - Virtual try-on endpoint
+- `GET /stats` - API statistics and cache metrics
+- `DELETE /cache` - Clear preprocessing cache
 
-## Join the community
+See `README_FASTAPI.md` for detailed API documentation.
 
-Join our community of developers creating universal apps.
+## Frontend - VirtualTryOn Mobile App
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+An Expo React Native mobile application that provides a user-friendly interface for virtual try-on.
+
+### Features
+
+- Image selection from camera or gallery
+- Real-time try-on processing
+- Loading and error state management
+- API integration with FastAPI backend
+- Environment-based API configuration
+
+### Requirements
+
+- Node.js 18 or higher
+- npm or yarn
+- Expo CLI
+- iOS Simulator / Android Emulator or physical device
+
+### Installation
+
+1. Install dependencies:
+```bash
+npm install
+```
+
+2. Configure API URL in `app.json`:
+```json
+{
+  "extra": {
+    "API_URL": "https://your-backend-url.com/api/try-on"
+  }
+}
+```
+
+3. Start the app:
+```bash
+npm start
+```
+
+See `README_SETUP.md` and `API_CONFIG.md` for detailed setup instructions.
+
+## Quick Start
+
+### Backend Setup
+```bash
+cd /path/to/repo
+pip install -r requirements.txt
+python app_fastapi.py
+```
+
+### Frontend Setup
+```bash
+cd /path/to/repo
+npm install
+npm start
+```
+
+## Architecture
+
+### Backend Architecture
+- Models loaded once at startup (singleton pattern)
+- Single GPU inference lock prevents concurrent usage
+- Intelligent caching for preprocessed images and masks
+- Rate limiting (10 requests/minute per IP)
+- Automatic cache clearing after inference
+
+### Frontend Architecture
+- Expo Router for navigation
+- React Native components for UI
+- Image picker for camera/gallery access
+- Multipart form data for API uploads
+- Environment-based configuration
+
+## Performance
+
+- RTX 4050 (6GB VRAM): ~60-120 seconds per inference
+- RTX 4090 (24GB VRAM): ~10 seconds per inference
+- Cache hit saves 2-3 seconds per request
+- Memory usage: Optimized for 6GB VRAM with fp16 precision
+
+## Deployment
+
+### Backend Deployment
+- Local development machines
+- Cloud GPU instances (AWS, GCP, Azure, RunPod)
+- On-premise servers with NVIDIA GPUs
+- Docker containers (with GPU passthrough)
+
+### Frontend Deployment
+- Expo Go for development
+- EAS Build for production apps
+- App Store / Google Play Store distribution
+
+## License
+
+See LICENSE file for details.
+
+## Support
+
+For issues, questions, or contributions, please open an issue on the GitHub repository.

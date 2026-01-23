@@ -1,6 +1,35 @@
 # Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
 
-# dependencies
+# Python (Backend - CatVTON)
+.cache/
+models/
+checkpoints/
+__pycache__/
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+.env
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+venv/
+env/
+ENV/
+.venv
+
+# Node.js / Expo (Frontend - VirtualTryOn)
 node_modules/
 
 # Expo
@@ -41,3 +70,10 @@ app-example
 # generated native folders
 /ios
 /android
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
