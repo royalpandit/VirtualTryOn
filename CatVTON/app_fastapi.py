@@ -408,20 +408,19 @@ async def try_on(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid cloth image type: {cloth_image.content_type}. Only JPEG/PNG allowed."
             )
-    
-    # Use defaults if not provided
-    cloth_type = cloth_type or DEFAULT_CONFIG["cloth_type"]
-    # Clamp num_inference_steps to prevent OOM (max 30 for production safety)
-    requested_steps = num_inference_steps or DEFAULT_CONFIG["num_inference_steps"]
-    num_inference_steps = min(requested_steps, 30)  # Hard limit for production
-    if requested_steps > 30:
-        print(f"WARNING: num_inference_steps clamped from {requested_steps} to 30 for safety")
-    guidance_scale = guidance_scale or DEFAULT_CONFIG["guidance_scale"]
-    seed = seed if seed is not None else DEFAULT_CONFIG["seed"]
-    width = DEFAULT_CONFIG["width"]
-    height = DEFAULT_CONFIG["height"]
-    
-    try:
+        
+        # Use defaults if not provided
+        cloth_type = cloth_type or DEFAULT_CONFIG["cloth_type"]
+        # Clamp num_inference_steps to prevent OOM (max 30 for production safety)
+        requested_steps = num_inference_steps or DEFAULT_CONFIG["num_inference_steps"]
+        num_inference_steps = min(requested_steps, 30)  # Hard limit for production
+        if requested_steps > 30:
+            print(f"WARNING: num_inference_steps clamped from {requested_steps} to 30 for safety")
+        guidance_scale = guidance_scale or DEFAULT_CONFIG["guidance_scale"]
+        seed = seed if seed is not None else DEFAULT_CONFIG["seed"]
+        width = DEFAULT_CONFIG["width"]
+        height = DEFAULT_CONFIG["height"]
+        
         # Read and validate images
         print(f"Processing request: cloth_type={cloth_type}, steps={num_inference_steps}, guidance={guidance_scale}")
         
