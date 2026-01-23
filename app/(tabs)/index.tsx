@@ -76,6 +76,15 @@ export default function HomeScreen() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Cleanup countdown interval on unmount - MUST be before any early returns
+  useEffect(() => {
+    return () => {
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+    };
+  }, []);
+
   if (!permission) {
     return <View style={styles.container} />;
   }
@@ -90,15 +99,6 @@ export default function HomeScreen() {
       </View>
     );
   }
-
-  // Cleanup countdown interval on unmount
-  useEffect(() => {
-    return () => {
-      if (countdownIntervalRef.current) {
-        clearInterval(countdownIntervalRef.current);
-      }
-    };
-  }, []);
 
   const startCountdown = () => {
     // Don't start if countdown is already running
