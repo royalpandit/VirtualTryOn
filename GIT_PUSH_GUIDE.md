@@ -32,10 +32,10 @@ From `d:\vton demo\CatVTON\`:
 cd "d:\vton demo\CatVTON"
 git add .
 git commit -m "Your meaningful commit message"
-git push origin main
+git push catvton main
 ```
 
-This pushes only the CatVTON backend code to the CatVTON repo.
+**Important**: Use `git push catvton main` (NOT `origin main`) to push only the CatVTON backend code to `yashvardhansharma111/catvton.git`.
 
 ## Quick Push to Both Repos
 
@@ -52,7 +52,7 @@ git push origin main
 cd "d:\vton demo\CatVTON"
 git add .
 git commit -m "Your meaningful commit message"
-git push origin main
+git push catvton main
 ```
 
 ## Important Notes
