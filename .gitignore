@@ -77,3 +77,11 @@ app-example
 *.swp
 *.swo
 *~
+
+# Documentation files (root level - do not push)
+CACHING.md
+SECURITY_AND_RATE_LIMITING.md
+CODE_ARCHITECTURE.md
+TECHNICAL_DOCUMENTATION.md
+IMPLEMENTATION_SUMMARY.md
+INTEGRATION_GUIDE.md
