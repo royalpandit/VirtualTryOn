@@ -71,6 +71,8 @@ export default function HomeScreen() {
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
   const [resultImage, setResultImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [preprocessingLoading, setPreprocessingLoading] = useState(false);
+  const [preprocessingCacheKey, setPreprocessingCacheKey] = useState<string | null>(null);
   const [facing, setFacing] = useState<CameraType>('front');
   const cameraRef = useRef<CameraView>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -143,11 +145,65 @@ export default function HomeScreen() {
         if (photo?.uri) {
           setCapturedPhoto(photo.uri);
           setResultImage(null);
+          setPreprocessingCacheKey(null); // Reset cache key for new photo
+          
+          // Immediately start preprocessing in background (non-blocking)
+          preprocessPersonImage(photo.uri);
         }
       } catch (error) {
         console.error('Error taking picture:', error);
         Alert.alert('Error', 'Failed to capture photo');
       }
+    }
+  };
+
+  const preprocessPersonImage = async (photoUri: string) => {
+    // This runs in background - don't block UI
+    setPreprocessingLoading(true);
+    
+    try {
+      console.log('=== Starting Background Preprocessing ===');
+      console.log('Person Image URI:', photoUri);
+      
+      const formData = new FormData();
+      const personImageData = {
+        uri: photoUri,
+        type: 'image/jpeg',
+        name: 'person.jpg',
+      } as any;
+      formData.append('person_image', personImageData);
+      formData.append('cloth_type', 'upper'); // Default cloth type
+      
+      const preprocessUrl = `${API_BASE_URL}/api/preprocess-person`;
+      console.log('Preprocessing URL:', preprocessUrl);
+      
+      const response = await fetch(preprocessUrl, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+        console.error('Preprocessing error:', errorData);
+        // Don't show alert - this is background processing, user can still select cloth
+        return;
+      }
+      
+      const data = await response.json();
+      console.log('Preprocessing completed:', data);
+      
+      if (data.success && data.cache_key) {
+        setPreprocessingCacheKey(data.cache_key);
+        console.log('Cache key stored:', data.cache_key);
+      }
+    } catch (error: any) {
+      console.error('Preprocessing error (non-blocking):', error);
+      // Don't show alert - this is background processing
+    } finally {
+      setPreprocessingLoading(false);
     }
   };
 
@@ -164,19 +220,27 @@ export default function HomeScreen() {
       console.log('=== Starting Try-On Request ===');
       console.log('API URL:', API_URL);
       console.log('Platform:', Platform.OS);
-      console.log('Person Image URI:', capturedPhoto);
+      console.log('Using cache_key:', preprocessingCacheKey ? 'YES' : 'NO');
       
       // Create FormData
       const formData = new FormData();
       
-      // Add person image (FastAPI expects 'person_image')
-      const personImageData = {
-        uri: capturedPhoto,
-        type: 'image/jpeg',
-        name: 'person.jpg',
-      } as any;
-      formData.append('person_image', personImageData);
-      console.log('Person image added to FormData');
+      // If we have a cache_key from preprocessing, use it (much faster!)
+      // Otherwise, fall back to sending person_image
+      if (preprocessingCacheKey) {
+        console.log('Using cached preprocessing with cache_key:', preprocessingCacheKey);
+        formData.append('cache_key', preprocessingCacheKey);
+        // Don't send person_image when using cache_key
+      } else {
+        console.log('No cache_key available, sending person_image (slower)');
+        const personImageData = {
+          uri: capturedPhoto,
+          type: 'image/jpeg',
+          name: 'person.jpg',
+        } as any;
+        formData.append('person_image', personImageData);
+        console.log('Person image added to FormData');
+      }
 
       // Add cloth image (FastAPI expects 'cloth_image') - handle Metro bundler URL by downloading it first
       const clothSource = RNImage.resolveAssetSource(clothingItem.image);
@@ -344,6 +408,7 @@ export default function HomeScreen() {
   const handleRetake = () => {
     setCapturedPhoto(null);
     setResultImage(null);
+    setPreprocessingCacheKey(null);
     cancelCountdown();
   };
 
@@ -399,10 +464,12 @@ export default function HomeScreen() {
             <>
               <View style={styles.previewContainer}>
                 <Image source={{ uri: capturedPhoto }} style={styles.previewImage} contentFit="contain" />
-                {loading && (
+                {(loading || preprocessingLoading) && (
                   <View style={styles.loadingOverlay}>
                     <ActivityIndicator size="large" color="#fff" />
-                    <Text style={styles.loadingText}>Processing...</Text>
+                    <Text style={styles.loadingText}>
+                      {preprocessingLoading ? 'Preparing image...' : 'Processing...'}
+                    </Text>
                   </View>
                 )}
               </View>
@@ -418,7 +485,7 @@ export default function HomeScreen() {
                     <TouchableOpacity
                       style={styles.clothingItem}
                       onPress={() => handleClothingSelect(item)}
-                      disabled={loading}
+                      disabled={loading || preprocessingLoading}
                     >
                       <Image source={item.image} style={styles.clothingImage} contentFit="cover" />
                       <Text style={styles.clothingName}>{item.name}</Text>
