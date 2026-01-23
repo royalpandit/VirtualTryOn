@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { View, StyleSheet, TouchableOpacity, Text, FlatList, ActivityIndicator, Alert, Image as RNImage, Platform } from 'react-native';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import { Image } from 'expo-image';
@@ -73,6 +73,8 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(false);
   const [facing, setFacing] = useState<CameraType>('front');
   const cameraRef = useRef<CameraView>(null);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   if (!permission) {
     return <View style={styles.container} />;
@@ -88,6 +90,48 @@ export default function HomeScreen() {
       </View>
     );
   }
+
+  // Cleanup countdown interval on unmount
+  useEffect(() => {
+    return () => {
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+    };
+  }, []);
+
+  const startCountdown = () => {
+    // Don't start if countdown is already running
+    if (countdown !== null) {
+      return;
+    }
+
+    setCountdown(3);
+    
+    countdownIntervalRef.current = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev === null || prev <= 1) {
+          // Countdown finished, take picture
+          if (countdownIntervalRef.current) {
+            clearInterval(countdownIntervalRef.current);
+            countdownIntervalRef.current = null;
+          }
+          setCountdown(null);
+          takePicture();
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const cancelCountdown = () => {
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    setCountdown(null);
+  };
 
   const takePicture = async () => {
     if (cameraRef.current) {
@@ -300,6 +344,7 @@ export default function HomeScreen() {
   const handleRetake = () => {
     setCapturedPhoto(null);
     setResultImage(null);
+    cancelCountdown();
   };
 
   return (
@@ -311,10 +356,22 @@ export default function HomeScreen() {
             style={styles.camera}
             facing={facing}
           >
+            {countdown !== null && (
+              <View style={styles.countdownOverlay}>
+                <Text style={styles.countdownText}>{countdown}</Text>
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={cancelCountdown}
+                >
+                  <Text style={styles.cancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            )}
             <View style={styles.buttonContainer}>
               <TouchableOpacity
-                style={styles.captureButton}
-                onPress={takePicture}
+                style={[styles.captureButton, countdown !== null && styles.captureButtonDisabled]}
+                onPress={startCountdown}
+                disabled={countdown !== null}
               >
                 <View style={styles.captureButtonInner} />
               </TouchableOpacity>
@@ -526,5 +583,38 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  countdownOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  countdownText: {
+    fontSize: 120,
+    fontWeight: 'bold',
+    color: '#fff',
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 10,
+  },
+  cancelButton: {
+    marginTop: 30,
+    backgroundColor: 'rgba(255, 59, 48, 0.8)',
+    paddingHorizontal: 30,
+    paddingVertical: 12,
+    borderRadius: 25,
+  },
+  cancelButtonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  captureButtonDisabled: {
+    opacity: 0.5,
   },
 });
