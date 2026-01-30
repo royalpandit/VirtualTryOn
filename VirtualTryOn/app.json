@@ -47,10 +47,7 @@
       "reactCompiler": true
     },
     "extra": {
-      "API_URL": "https://eae9hni3mgztgt-8000.proxy.runpod.net/api/try-on",
-      "eas": {
-        "projectId": "your-project-id"
-      }
+      "API_URL": "https://eae9hni3mgztgt-8000.proxy.runpod.net/api/try-on"
     }
   }
 }
