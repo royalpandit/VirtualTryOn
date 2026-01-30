@@ -1,6 +1,6 @@
 import inspect
 import os
-from typing import Union
+from typing import Union, Optional
 
 import PIL
 import numpy as np
@@ -8,6 +8,16 @@ import torch
 import tqdm
 from accelerate import load_checkpoint_in_model
 from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
+try:
+    from diffusers import DPMSolverMultistepScheduler
+    _HAS_DPMSOLVER = True
+except ImportError:
+    _HAS_DPMSOLVER = False
+try:
+    from diffusers import EulerDiscreteScheduler
+    _HAS_EULER = True
+except ImportError:
+    _HAS_EULER = False
 from diffusers.pipelines.stable_diffusion.safety_checker import \
     StableDiffusionSafetyChecker
 from diffusers.utils.torch_utils import randn_tensor
@@ -31,24 +41,52 @@ class CatVTONPipeline:
         compile=False,
         skip_safety_check=False,
         use_tf32=True,
+        fast_mode=False,
     ):
         self.device = device
         self.weight_dtype = weight_dtype
         self.skip_safety_check = skip_safety_check
+        self.fast_mode = fast_mode
 
-        self.noise_scheduler = DDIMScheduler.from_pretrained(base_ckpt, subfolder="scheduler")
+        ddim_scheduler = DDIMScheduler.from_pretrained(base_ckpt, subfolder="scheduler")
+        if fast_mode and (_HAS_DPMSOLVER or _HAS_EULER):
+            try:
+                if _HAS_DPMSOLVER:
+                    self.noise_scheduler = DPMSolverMultistepScheduler.from_config(ddim_scheduler.config)
+                    print("Using DPMSolverMultistepScheduler (fast_mode)")
+                else:
+                    self.noise_scheduler = EulerDiscreteScheduler.from_config(ddim_scheduler.config)
+                    print("Using EulerDiscreteScheduler (fast_mode)")
+            except Exception as e:
+                print(f"Fast scheduler init failed ({e}), falling back to DDIM")
+                self.noise_scheduler = ddim_scheduler
+        else:
+            self.noise_scheduler = ddim_scheduler
+
         self.vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").to(device, dtype=weight_dtype)
         if not skip_safety_check:
             self.feature_extractor = CLIPImageProcessor.from_pretrained(base_ckpt, subfolder="feature_extractor")
             self.safety_checker = StableDiffusionSafetyChecker.from_pretrained(base_ckpt, subfolder="safety_checker").to(device, dtype=weight_dtype)
+        else:
+            self.feature_extractor = None
+            self.safety_checker = None
         self.unet = UNet2DConditionModel.from_pretrained(base_ckpt, subfolder="unet").to(device, dtype=weight_dtype)
         init_adapter(self.unet, cross_attn_cls=SkipAttnProcessor)  # Skip Cross-Attention
         self.attn_modules = get_trainable_module(self.unet, "attention")
         self.auto_attn_ckpt_load(attn_ckpt, attn_ckpt_version)
-        # Pytorch 2.0 Compile
-        if compile:
-            self.unet = torch.compile(self.unet)
-            self.vae = torch.compile(self.vae, mode="reduce-overhead")
+        # Pytorch 2.0 Compile (once at startup, not per request)
+        if compile and hasattr(torch, "compile") and callable(getattr(torch, "compile", None)):
+            try:
+                self.unet = torch.compile(self.unet, mode="reduce-overhead")
+                print("UNet torch.compile applied (PyTorch >= 2.0)")
+            except Exception as e:
+                print(f"torch.compile failed ({e}), using eager UNet")
+        if compile and hasattr(torch, "compile") and callable(getattr(torch, "compile", None)):
+            try:
+                self.vae = torch.compile(self.vae, mode="reduce-overhead")
+                print("VAE torch.compile applied")
+            except Exception as e:
+                print(f"VAE torch.compile failed ({e})")
             
         # Enable TF32 for faster training on Ampere GPUs (A100 and RTX 30 series).
         if use_tf32:
@@ -120,20 +158,25 @@ class CatVTONPipeline:
         width: int = 768,
         generator=None,
         eta=1.0,
+        condition_latent: Optional[torch.Tensor] = None,
         **kwargs
     ):
         concat_dim = -2  # FIXME: y axis concat
-        # Prepare inputs to Tensor
+        # Prepare inputs to Tensor (fp16 for speed)
         image, condition_image, mask = self.check_inputs(image, condition_image, mask, width, height)
         image = prepare_image(image).to(self.device, dtype=self.weight_dtype)
         condition_image = prepare_image(condition_image).to(self.device, dtype=self.weight_dtype)
         mask = prepare_mask_image(mask).to(self.device, dtype=self.weight_dtype)
         # Mask image
         masked_image = image * (mask < 0.5)
-        # VAE encoding
+        # VAE encoding: use cached condition_latent if provided (same resolution)
         masked_latent = compute_vae_encodings(masked_image, self.vae)
-        condition_latent = compute_vae_encodings(condition_image, self.vae)
-        mask_latent = torch.nn.functional.interpolate(mask, size=masked_latent.shape[-2:], mode="nearest")
+        if condition_latent is not None and condition_latent.shape == masked_latent.shape:
+            condition_latent = condition_latent.to(self.device, dtype=self.weight_dtype)
+        else:
+            condition_latent = compute_vae_encodings(condition_image, self.vae)
+        condition_latent = condition_latent.to(self.device, dtype=self.weight_dtype)
+        mask_latent = torch.nn.functional.interpolate(mask, size=masked_latent.shape[-2:], mode="nearest").to(self.device, dtype=self.weight_dtype)
         del image, mask, condition_image
         # Concatenate latents
         masked_latent_concat = torch.cat([masked_latent, condition_latent], dim=concat_dim)

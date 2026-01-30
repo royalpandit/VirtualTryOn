@@ -22,13 +22,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from PIL import Image
+from PIL import Image, ImageFilter
 from diffusers.image_processor import VaeImageProcessor
 from huggingface_hub import snapshot_download
 
 from model.cloth_masker import AutoMasker
 from model.pipeline import CatVTONPipeline
-from utils import init_weight_dtype, resize_and_crop, resize_and_padding
+from utils import init_weight_dtype, resize_and_crop, resize_and_padding, prepare_image, compute_vae_encodings
 
 # Global model instances (singleton pattern)
 _pipeline: Optional[CatVTONPipeline] = None
@@ -55,6 +55,11 @@ _cache_lock = threading.Lock()  # Lock for cache access
 CACHE_TTL_MINUTES = 30  # Cache expires after 30 minutes
 MAX_CACHE_SIZE = 100  # Maximum number of cached entries
 
+# Cache for VAE-encoded cloth latents (keyed by cloth image hash)
+_cloth_latent_cache: Dict[str, torch.Tensor] = {}
+_cloth_cache_lock = threading.Lock()
+MAX_CLOTH_CACHE_SIZE = 50
+
 # Rate limiter
 limiter = Limiter(key_func=get_remote_address)
 
@@ -66,10 +71,12 @@ DEFAULT_CONFIG = {
     "height": 1024,
     "mixed_precision": "fp16",  # Use fp16 for RTX 4050 (6GB VRAM)
     "allow_tf32": True,
-    "num_inference_steps": 30,  # Reduced for faster inference on RTX 4050
+    "num_inference_steps": 30,  # Quality mode; fast_mode uses 25
     "guidance_scale": 2.5,
     "seed": 42,
     "cloth_type": "upper",  # Default cloth type
+    "fast_mode": True,  # True: DPM++ scheduler + 25 steps (best speed/quality balance)
+    "skip_safety_check": True,  # Skip safety checker to reduce inference time
 }
 
 app = FastAPI(title="CatVTON API", version="1.0.0")
@@ -113,6 +120,7 @@ def load_models(config: dict):
         # Initialize pipeline
         print("Initializing CatVTON pipeline...")
         weight_dtype = init_weight_dtype(config["mixed_precision"])
+        use_compile = hasattr(torch, "compile") and callable(getattr(torch, "compile", None))
         _pipeline = CatVTONPipeline(
             base_ckpt=config["base_model_path"],
             attn_ckpt=repo_path,
@@ -120,7 +128,9 @@ def load_models(config: dict):
             weight_dtype=weight_dtype,
             use_tf32=config["allow_tf32"],
             device='cuda',
-            skip_safety_check=False,  # Keep safety checker enabled
+            skip_safety_check=config.get("skip_safety_check", False),
+            fast_mode=config.get("fast_mode", False),
+            compile=use_compile,
         )
         print("Pipeline loaded successfully!")
         
@@ -142,6 +152,14 @@ def load_models(config: dict):
         # Signal that models are loaded
         _model_loaded.set()
         
+        # Warmup: one dummy inference to prime CUDA kernels and memory
+        print("Running warmup inference (1 step)...")
+        try:
+            _run_warmup_inference(config)
+            print("Warmup completed.")
+        except Exception as warmup_err:
+            print(f"Warmup failed (non-fatal): {warmup_err}")
+        
         print("=" * 60)
         print("All models loaded successfully!")
         print(f"GPU: {torch.cuda.get_device_name(0)}")
@@ -151,6 +169,26 @@ def load_models(config: dict):
     except Exception as e:
         print(f"ERROR: Failed to load models: {e}")
         raise
+
+
+def _run_warmup_inference(config: dict):
+    """One minimal inference (1 step) to warm up CUDA kernels and memory."""
+    w, h = config["width"], config["height"]
+    # Tiny dummy images (same size as real to match allocator)
+    dummy_person = Image.new("RGB", (w, h), color=(128, 128, 128))
+    dummy_cloth = Image.new("RGB", (w, h), color=(200, 200, 200))
+    dummy_mask = Image.new("L", (w, h), color=128)
+    with torch.no_grad():
+        _pipeline(
+            image=dummy_person,
+            condition_image=dummy_cloth,
+            mask=dummy_mask,
+            num_inference_steps=1,
+            guidance_scale=config.get("guidance_scale", 2.5),
+            height=h,
+            width=w,
+        )
+    torch.cuda.empty_cache()
 
 
 @contextmanager
@@ -187,9 +225,9 @@ def gpu_inference_lock():
 
 
 def image_to_base64(image: Image.Image) -> str:
-    """Convert PIL Image to base64 string."""
+    """Convert PIL Image to base64 string (high quality for CatVTON output)."""
     buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=95)
+    image.save(buffer, format="JPEG", quality=98)
     img_bytes = buffer.getvalue()
     return base64.b64encode(img_bytes).decode("utf-8")
 
@@ -232,6 +270,104 @@ def get_cache_key(person_img: Image.Image, cloth_type: str) -> str:
     """
     img_hash = image_hash(person_img)
     return f"{img_hash}_{cloth_type}"
+
+
+def get_cloth_hash(cloth_img: Image.Image) -> str:
+    """Hash cloth image for latent cache key."""
+    return image_hash(cloth_img)
+
+
+def get_cached_cloth_latent(cloth_hash: str):
+    """Return cached VAE latent for cloth if present."""
+    with _cloth_cache_lock:
+        return _cloth_latent_cache.get(cloth_hash)
+
+
+def set_cached_cloth_latent(cloth_hash: str, latent: torch.Tensor):
+    """Cache VAE-encoded cloth latent; evict oldest if full."""
+    with _cloth_cache_lock:
+        if len(_cloth_latent_cache) >= MAX_CLOTH_CACHE_SIZE:
+            # Evict first (arbitrary) key to keep size bounded
+            key_to_remove = next(iter(_cloth_latent_cache))
+            del _cloth_latent_cache[key_to_remove]
+        _cloth_latent_cache[cloth_hash] = latent.cpu().clone()
+
+
+def reduce_halo(
+    result_img: Image.Image,
+    mask_img: Image.Image,
+    person_img: Image.Image,
+    erode_px: int = 12,
+) -> Image.Image:
+    """
+    Reduce transparent/blurry halo around the garment by compositing result with the
+    original person image using an eroded mask. We only trust the model output well
+    inside the garment; the boundary ring (where halo appears) uses the original photo.
+    """
+    result_np = np.array(result_img).astype(np.float32) / 255.0
+    person_resized = person_img.resize(result_img.size, Image.LANCZOS)
+    person_np = np.array(person_resized).astype(np.float32) / 255.0
+    mask_pil = mask_img.resize(result_img.size, Image.LANCZOS)
+    mask_np = np.array(mask_pil)
+    if mask_np.ndim == 3:
+        mask_np = mask_np[:, :, 0]
+    mask_bin = (mask_np > 127).astype(np.uint8) * 255
+
+    try:
+        import cv2
+        # Strong erosion so boundary (halo zone) is fully replaced by original
+        kernel_size = max(3, min(erode_px * 2 + 1, 31))  # odd, cap at 31
+        kernel = np.ones((kernel_size, kernel_size), np.uint8)
+        alpha = cv2.erode(mask_bin, kernel)
+        alpha = alpha.astype(np.float32) / 255.0
+        # Very slight blur on alpha only to avoid jagged seam (keep boundary sharp)
+        alpha = cv2.GaussianBlur(alpha, (3, 3), 0.5)
+    except Exception:
+        # Fallback: PIL erosion
+        mask_pil = Image.fromarray(mask_bin)
+        for _ in range(erode_px):
+            mask_pil = mask_pil.filter(ImageFilter.MinFilter(5))
+        alpha = np.array(mask_pil).astype(np.float32) / 255.0
+        if alpha.ndim == 3:
+            alpha = alpha[:, :, 0]
+
+    alpha = np.clip(alpha, 0, 1)
+    alpha_3 = np.stack([alpha] * 3, axis=-1)
+    out = result_np * alpha_3 + person_np * (1.0 - alpha_3)
+    out = np.clip(out, 0, 1)
+    return Image.fromarray((out * 255).astype(np.uint8))
+
+
+def preserve_garment_dark_colors(
+    result_img: Image.Image,
+    mask_img: Image.Image,
+    cloth_img: Image.Image,
+    gamma: float = 0.92,
+    dark_threshold: float = 0.35,
+    dark_mult: float = 0.85,
+) -> Image.Image:
+    """
+    Lightweight post-process on the garment (mask) region only to keep blacks dark.
+    Applies gamma and darkens pixels where input cloth is dark so black clothes stay black.
+    """
+    out = np.array(result_img).astype(np.float32) / 255.0
+    cloth_arr = np.array(cloth_img.resize(result_img.size, Image.LANCZOS)).astype(np.float32) / 255.0
+    mask = np.array(mask_img.resize(result_img.size, Image.LANCZOS))
+    if mask.ndim == 3:
+        mask = mask[:, :, 0]
+    region = (mask > 127)
+    if region.sum() == 0:
+        return result_img
+    region_3 = np.stack([region] * 3, axis=-1)
+    # Gamma on garment region (slight darken to preserve darks)
+    out = np.where(region_3, np.power(np.clip(out, 1e-5, 1), gamma), out)
+    # Where input cloth is dark, darken output further so black stays black
+    cloth_luma = 0.299 * cloth_arr[:, :, 0] + 0.587 * cloth_arr[:, :, 1] + 0.114 * cloth_arr[:, :, 2]
+    dark_input = (cloth_luma < dark_threshold) & region
+    dark_3 = np.stack([dark_input] * 3, axis=-1)
+    out = np.where(dark_3, out * dark_mult, out)
+    out = np.clip(out, 0, 1)
+    return Image.fromarray((out * 255).astype(np.uint8))
 
 
 def get_cached_preprocessing(cache_key: str) -> Optional[Tuple[Image.Image, Image.Image]]:
@@ -534,18 +670,19 @@ async def try_on(
         
         # Use defaults if not provided
         cloth_type = cloth_type or DEFAULT_CONFIG["cloth_type"]
-        # Clamp num_inference_steps to prevent OOM (max 30 for production safety)
-        requested_steps = num_inference_steps or DEFAULT_CONFIG["num_inference_steps"]
-        num_inference_steps = min(requested_steps, 30)  # Hard limit for production
-        if requested_steps > 30:
-            print(f"WARNING: num_inference_steps clamped from {requested_steps} to 30 for safety")
+        fast_mode = DEFAULT_CONFIG.get("fast_mode", False)
+        if fast_mode:
+            num_inference_steps = 25  # Fast mode: 25 steps (best balance for production)
+        else:
+            requested_steps = num_inference_steps or DEFAULT_CONFIG["num_inference_steps"]
+            num_inference_steps = min(requested_steps, 30)
         guidance_scale = guidance_scale or DEFAULT_CONFIG["guidance_scale"]
         seed = seed if seed is not None else DEFAULT_CONFIG["seed"]
         width = DEFAULT_CONFIG["width"]
         height = DEFAULT_CONFIG["height"]
         
         # Read and validate images
-        print(f"Processing request: cloth_type={cloth_type}, steps={num_inference_steps}, guidance={guidance_scale}, cache_key={'provided' if cache_key else 'none'}")
+        print(f"Processing request: cloth_type={cloth_type}, steps={num_inference_steps}, guidance={guidance_scale}, fast_mode={fast_mode}, cache_key={'provided' if cache_key else 'none'}")
         
         # Read cloth image (always required)
         cloth_bytes = await cloth_image.read()
@@ -554,6 +691,7 @@ async def try_on(
         cloth_img = resize_and_padding(cloth_img, (width, height))
         
         # Handle person image: use cache_key if provided, otherwise process person_image
+        preprocess_time_sec = 0.0
         if cache_key:
             # Use cached preprocessing
             print(f"Using cache_key: {cache_key[:16]}...")
@@ -619,8 +757,8 @@ async def try_on(
                 mask_result = _automasker(person_img, cloth_type)
                 mask = mask_result['mask']
                 mask = _mask_processor.blur(mask, blur_factor=9)
-                mask_time = time.time() - mask_start_time
-                print(f"Mask generation took {mask_time:.2f}s")
+                preprocess_time_sec = time.time() - mask_start_time
+                print(f"Mask generation took {preprocess_time_sec:.2f}s")
                 
                 # Cache the preprocessed image and mask
                 set_cached_preprocessing(cache_key, person_img, mask)
@@ -633,12 +771,24 @@ async def try_on(
             generator = torch.Generator(device='cuda').manual_seed(seed)
         
         # Run inference with GPU lock and timeout protection
-        print("Running inference...")
-        inference_timeout = 120  # 120 seconds (2 min) - RTX 4050 needs more time for 30 steps
+        inference_timeout = 120  # 120 seconds (2 min)
         
         with gpu_inference_lock():
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
+            
+            # Cloth latent: use cache or encode (for timing and reuse)
+            cloth_hash = get_cloth_hash(cloth_img)
+            t_vae_start = time.time()
+            cached_cloth_latent = get_cached_cloth_latent(cloth_hash)
+            if cached_cloth_latent is not None:
+                condition_latent = cached_cloth_latent.to(_pipeline.device, dtype=_pipeline.weight_dtype)
+                vae_encode_time_sec = 0.0
+            else:
+                cloth_t = prepare_image(cloth_img).to(_pipeline.device, dtype=_pipeline.weight_dtype)
+                condition_latent = compute_vae_encodings(cloth_t, _pipeline.vae)
+                set_cached_cloth_latent(cloth_hash, condition_latent)
+                vae_encode_time_sec = time.time() - t_vae_start
             
             def run_inference_sync():
                 """Run inference synchronously - will be executed in thread pool."""
@@ -652,10 +802,11 @@ async def try_on(
                         generator=generator,
                         height=height,
                         width=width,
+                        condition_latent=condition_latent,
                     )
                 return result_images[0]
             
-            # Run inference with asyncio timeout (cross-platform)
+            t_inference_start = time.time()
             try:
                 loop = asyncio.get_event_loop()
                 with ThreadPoolExecutor(max_workers=1) as executor:
@@ -664,29 +815,31 @@ async def try_on(
                         timeout=inference_timeout
                     )
             except asyncio.TimeoutError:
-                # Timeout occurred - release lock and return error
                 torch.cuda.empty_cache()
                 raise HTTPException(
                     status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                     detail="Inference exceeded 120 second timeout. The request was cancelled to prevent GPU lock."
                 )
-            
             except torch.cuda.OutOfMemoryError as e:
-                # Clear cache and return error
                 torch.cuda.empty_cache()
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=f"GPU out of memory. Image may be too large. Error: {str(e)}"
                 )
-            
-            # Clear GPU cache after inference (ONLY after, not before)
+            inference_time_sec = time.time() - t_inference_start
             torch.cuda.empty_cache()
+        
+        # Halo reduction: replace blurry/transparent garment edges with original image
+        t_post_start = time.time()
+        result_image = reduce_halo(result_image, mask, person_img)
+        result_image = preserve_garment_dark_colors(result_image, mask, cloth_img)
+        postprocess_time_sec = time.time() - t_post_start
         
         # Convert to base64
         result_base64 = image_to_base64(result_image)
         
         total_time = time.time() - request_start_time
-        print(f"Inference completed successfully! Total time: {total_time:.2f}s")
+        print(f"[Timing] preprocess={preprocess_time_sec:.2f}s vae_encode={vae_encode_time_sec:.2f}s inference={inference_time_sec:.2f}s postprocess={postprocess_time_sec:.2f}s total={total_time:.2f}s")
         
         return {
             "success": True,

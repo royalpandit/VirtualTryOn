@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "VirtualTryOn",
-    "slug": "VirtualTryOn",
+    "name": "oui",
+    "slug": "oui",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "virtualtryon",
+    "scheme": "oui",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -21,7 +21,7 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "usesCleartextTraffic": true,
-      "package": "com.yashvardhan0012.VirtualTryOn"
+      "package": "com.yashvardhan0012.oui"
     },
     "web": {
       "output": "static",
@@ -47,7 +47,7 @@
       "reactCompiler": true
     },
     "extra": {
-      "API_URL": "https://ohg82v8wv5vpwe-8000.proxy.runpod.net/api/try-on",
+      "API_URL": "https://eae9hni3mgztgt-8000.proxy.runpod.net/api/try-on",
       "eas": {
         "projectId": "your-project-id"
       }
