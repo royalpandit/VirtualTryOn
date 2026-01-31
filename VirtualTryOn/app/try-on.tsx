@@ -145,10 +145,10 @@ export default function TryOnScreen() {
       const formData = new FormData();
       formData.append('person_image', { uri: photoUri, type: 'image/jpeg', name: 'person.jpg' } as any);
       formData.append('cloth_type', clothType);
+      // Do not set Content-Type: let runtime set multipart/form-data with boundary (required for APK)
       const res = await fetch(`${API_BASE_URL}/api/preprocess-person`, {
         method: 'POST',
         body: formData,
-        headers: { 'Content-Type': 'multipart/form-data' },
       });
       if (res.ok) {
         const data = await res.json();
@@ -191,10 +191,10 @@ export default function TryOnScreen() {
       formData.append('cloth_image', { uri: clothUri, type: mime, name: `cloth.${clothUri.split('.').pop()?.split('?')[0] || 'jpg'}` } as any);
       formData.append('cloth_type', clothingItem?.cloth_type ?? 'upper');
 
+      // Do not set Content-Type: let runtime set multipart/form-data with boundary (required for APK)
       const response = await fetch(API_URL, {
         method: 'POST',
         body: formData,
-        headers: { 'Content-Type': 'multipart/form-data' },
       });
 
       if (!response.ok) {
