@@ -15,6 +15,7 @@ import {
     Platform,
     Image as RNImage,
     ScrollView,
+    Share,
     StyleSheet,
     Text,
     TouchableOpacity,
@@ -88,6 +89,15 @@ export default function TryOnScreen() {
   const [CameraComponent, setCameraComponent] = useState<React.ComponentType<{ onPhotoTaken: (uri: string) => void; onBack: () => void }> | null>(null);
   const [cameraLoadError, setCameraLoadError] = useState<string | null>(null);
   const [tryOnError, setTryOnError] = useState<string | null>(null);
+  const [requestDetails, setRequestDetails] = useState<{
+    url: string;
+    sending: string;
+    format: string;
+    reached: boolean | null;
+    responseStatus?: number;
+    error?: string;
+  } | null>(null);
+  const [requestLog, setRequestLog] = useState<string[]>([]);
 
   useEffect(() => {
     console.log('[TRY-ON] Screen mounted, API_BASE_URL=', API_BASE_URL, 'TRY_ON_URL=', TRY_ON_URL);
@@ -203,9 +213,19 @@ export default function TryOnScreen() {
     setLoading(true);
     setResultImage(null);
     setTryOnError(null);
-    console.log('[TRY-ON] Start', { TRY_ON_URL, cache_key: preprocessingCacheKey ?? 'none', cloth_type: clothingItem?.cloth_type });
+    const clothTypeVal = clothingItem?.cloth_type ?? 'upper';
+    setRequestLog([`0. API URL: ${TRY_ON_URL}`, '1. Start']);
+    setRequestDetails({
+      url: TRY_ON_URL,
+      sending: 'Preparing...',
+      format: 'multipart/form-data (no Content-Type set, boundary auto)',
+      reached: null,
+    });
+    const addLog = (line: string) => setRequestLog((prev) => [...prev, line]);
+    console.log('[TRY-ON] Start', { TRY_ON_URL, cache_key: preprocessingCacheKey ?? 'none', cloth_type: clothTypeVal });
     try {
       const formData = new FormData();
+      const personField = preprocessingCacheKey ? `cache_key: ${preprocessingCacheKey.slice(0, 12)}...` : 'person_image: (file from camera/gallery)';
       if (preprocessingCacheKey) {
         formData.append('cache_key', preprocessingCacheKey);
         console.log('[TRY-ON] Using cache_key', preprocessingCacheKey.slice(0, 16) + '...');
@@ -213,40 +233,46 @@ export default function TryOnScreen() {
         formData.append('person_image', { uri: capturedPhoto, type: 'image/jpeg', name: 'person.jpg' } as any);
         console.log('[TRY-ON] Using person_image uri', capturedPhoto?.slice?.(0, 50) ?? capturedPhoto);
       }
+      formData.append('cloth_type', clothTypeVal);
+
       const imageModule = clothingItem?.image ?? require('@/assets/clothes/colourfull-sweatshirt.jpg');
+      let clothUri: string;
       const clothSource = RNImage.resolveAssetSource(imageModule);
-      console.log('[TRY-ON] clothSource', { uri: clothSource?.uri, type: typeof clothSource?.uri, raw: clothSource });
-      let clothUri: string = typeof clothSource?.uri === 'string' ? clothSource.uri : '';
-      if (!clothUri && typeof clothSource === 'number') {
-        clothUri = String(clothSource);
-      }
-      const isRealFileUri = clothUri.startsWith('file://') || clothUri.startsWith('content://') || clothUri.startsWith('http');
-      if (!isRealFileUri && (clothUri.length < 2 || clothUri === String(Number(clothUri)))) {
-        console.log('[TRY-ON] Resolving bundled cloth asset via expo-asset (APK-safe)...');
+      const rawUri = typeof clothSource?.uri === 'string' ? clothSource.uri : typeof clothSource === 'number' ? String(clothSource) : '';
+      addLog(`2. clothSource: uri type=${typeof clothSource?.uri}${rawUri ? `, starts ${rawUri.slice(0, 20)}...` : ''}`);
+      console.log('[TRY-ON] clothSource', { uri: rawUri?.slice(0, 50), type: typeof clothSource?.uri });
+
+      if (rawUri.startsWith('http')) {
+        try {
+          addLog('3. Downloading cloth from URL...');
+          console.log('[TRY-ON] Downloading cloth from URL...');
+          const FileSystem = await import('expo-file-system/legacy');
+          const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
+          const ext = rawUri.includes('.png') ? 'png' : 'jpg';
+          const fileUri = `${cacheDir}cloth-${Date.now()}.${ext}`;
+          await FileSystem.downloadAsync(rawUri, fileUri);
+          clothUri = fileUri;
+          addLog(`4. Cloth downloaded: ${fileUri.slice(0, 40)}...`);
+          console.log('[TRY-ON] Cloth downloaded to', fileUri);
+        } catch (fsErr: unknown) {
+          logError('TRY-ON cloth download', fsErr, { rawUri: rawUri?.slice(0, 60) });
+          const msg = fsErr instanceof Error ? fsErr.message : String(fsErr);
+          throw new Error(`Could not download cloth image: ${msg}`);
+        }
+      } else {
+        addLog('3. Resolving cloth via expo-asset (APK)...');
+        console.log('[TRY-ON] Resolving cloth via expo-asset (APK-safe file URI)...');
         try {
           const asset = Asset.fromModule(imageModule);
           await asset.downloadAsync();
           clothUri = asset.localUri ?? asset.uri ?? '';
-          console.log('[TRY-ON] Cloth asset localUri', clothUri ? clothUri.slice(0, 60) + '...' : 'none');
+          if (!clothUri) throw new Error('Asset has no localUri or uri');
+          addLog(`4. Cloth localUri: ${clothUri.startsWith('file://') ? 'file://...' : clothUri.slice(0, 30)}...`);
+          console.log('[TRY-ON] Cloth asset localUri', clothUri.slice(0, 60) + '...');
         } catch (assetErr: unknown) {
-          logError('TRY-ON cloth asset', assetErr, { clothUri: clothUri?.slice(0, 40) });
+          logError('TRY-ON cloth asset', assetErr, { rawUri: rawUri?.slice(0, 40) });
           const msg = assetErr instanceof Error ? assetErr.message : String(assetErr);
           throw new Error(`Could not load cloth image: ${msg}`);
-        }
-      } else if (clothUri.startsWith('http')) {
-        try {
-          console.log('[TRY-ON] Downloading cloth from URL...');
-          const FileSystem = await import('expo-file-system/legacy');
-          const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
-          const ext = clothUri.includes('.png') ? 'png' : 'jpg';
-          const fileUri = `${cacheDir}cloth-${Date.now()}.${ext}`;
-          await FileSystem.downloadAsync(clothUri, fileUri);
-          clothUri = fileUri;
-          console.log('[TRY-ON] Cloth downloaded to', fileUri);
-        } catch (fsErr: unknown) {
-          logError('TRY-ON cloth download', fsErr, { clothUri: clothUri?.slice(0, 60) });
-          const msg = fsErr instanceof Error ? fsErr.message : String(fsErr);
-          throw new Error(`Could not download cloth image: ${msg}`);
         }
       }
       if (!clothUri || clothUri.length < 2) {
@@ -254,12 +280,23 @@ export default function TryOnScreen() {
         throw new Error('Cloth image URI is missing. Try another item.');
       }
       const mime = clothUri.split('.').pop()?.toLowerCase() === 'png' ? 'image/png' : 'image/jpeg';
-      formData.append('cloth_image', { uri: clothUri, type: mime, name: `cloth.${clothUri.split('.').pop()?.split('?')[0] || 'jpg'}` } as any);
-      formData.append('cloth_type', clothingItem?.cloth_type ?? 'upper');
-      console.log('[TRY-ON] FormData ready, clothUri length', clothUri.length, 'mime', mime);
+      const clothName = `cloth.${clothUri.split('.').pop()?.split('?')[0] || 'jpg'}`;
+      formData.append('cloth_image', { uri: clothUri, type: mime, name: clothName } as any);
+      const clothUriType = clothUri.startsWith('file://') ? 'file' : clothUri.startsWith('http') ? 'http' : 'other';
+      addLog(`5. FormData ready (cloth: ${clothUriType}, ${mime})`);
+      setRequestDetails((prev) => (prev ? {
+        ...prev,
+        sending: [
+          `Person: ${personField}`,
+          `cloth_type: ${clothTypeVal}`,
+          `cloth_image: (${clothUriType}) ${mime}, name=${clothName}`,
+        ].join('\n'),
+      } : null));
+      console.log('[TRY-ON] FormData ready, cloth last, uri=', clothUri.startsWith('file://') ? 'file://...' : clothUri.slice(0, 50), 'mime', mime);
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), TRY_ON_TIMEOUT_MS);
+      addLog('6. Fetching...');
       console.log('[TRY-ON] Fetching', TRY_ON_URL);
       const response = await fetch(TRY_ON_URL, {
         method: 'POST',
@@ -268,6 +305,8 @@ export default function TryOnScreen() {
       });
       clearTimeout(timeoutId);
 
+      addLog(`7. Response: ${response.status} ${response.statusText}`);
+      setRequestDetails((prev) => (prev ? { ...prev, reached: true, responseStatus: response.status } : null));
       console.log('[TRY-ON] Response', response.status, response.statusText, response.ok);
       if (!response.ok) {
         const errBody = await response.text();
@@ -278,33 +317,52 @@ export default function TryOnScreen() {
         } catch {
           err = { detail: errBody?.slice(0, 100) || response.statusText };
         }
-        throw new Error(err.detail || `Request failed ${response.status}`);
+        const errMsg = err.detail || `Request failed ${response.status}`;
+        setRequestDetails((prev) => (prev ? { ...prev, error: errMsg } : null));
+        throw new Error(errMsg);
       }
       const data = await response.json();
       if (!data?.imageBase64) {
         console.error('[TRY-ON] Response missing imageBase64', Object.keys(data ?? {}));
+        setRequestDetails((prev) => (prev ? { ...prev, error: 'Invalid response: no image' } : null));
         throw new Error('Invalid response: no image');
       }
+      addLog('8. Success');
       setTryOnError(null);
+      setRequestDetails((prev) => (prev ? { ...prev, error: undefined } : null));
       setResultImage(`data:image/jpeg;base64,${data.imageBase64}`);
       setStep('result');
       console.log('[TRY-ON] Success');
     } catch (e: any) {
+      addLog(`ERR: ${e?.name ?? 'Error'} - ${e?.message ?? String(e)}`);
       logError('TRY-ON', e, {
         name: e?.name,
         message: e?.message,
         code: e?.code,
         status: e?.status,
       });
+      setRequestDetails((prev) => (prev ? {
+        ...prev,
+        reached: prev.reached ?? false,
+        error: e?.message ?? String(e),
+      } : null));
       const isAbort = e?.name === 'AbortError';
       const shortMsg = isAbort
         ? 'Try-on timed out. Check your connection and try again.'
         : formatErrorForAlert(e);
+      const isNetworkFailed = (e?.message ?? '').toLowerCase().includes('network request failed');
+      const devHint = __DEV__ && isNetworkFailed
+        ? 'Dev: Start the backend (e.g. in CatVTON: python app_fastapi.py). It must listen on 0.0.0.0:8000. On a physical device, use same Wi‑Fi as PC; allow port 8000 in Windows Firewall if needed.'
+        : !__DEV__ && (API_BASE_URL?.includes('localhost') || API_BASE_URL?.includes('10.0.2.2'))
+          ? 'Hint: APK may be using wrong URL. Set extra.API_URL in app.json and rebuild.'
+          : null;
       const fullDetail = [
         e?.name && e.name !== 'Error' ? `Type: ${e.name}` : null,
         e?.message ? `Message: ${e.message}` : null,
         e?.code != null ? `Code: ${e.code}` : null,
         e?.status != null ? `Status: ${e.status}` : null,
+        `URL: ${TRY_ON_URL}`,
+        devHint,
       ]
         .filter(Boolean)
         .join('\n');
@@ -367,6 +425,74 @@ export default function TryOnScreen() {
 
       {step === 'preview' && capturedPhoto && (
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+          {/* When error: show log first so it's visible without scrolling (APK has no console) */}
+          {tryOnError ? (
+            <View style={styles.errorBox}>
+              <Text style={styles.errorTitle}>Error details</Text>
+              <Text style={styles.errorText} selectable>
+                {tryOnError}
+              </Text>
+              <TouchableOpacity style={styles.errorDismissBtn} onPress={() => { setTryOnError(null); setRequestDetails(null); setRequestLog([]); }}>
+                <Text style={styles.errorDismissText}>Dismiss</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+          {(requestDetails || requestLog.length > 0) ? (
+            <View style={styles.detailsBox}>
+              <Text style={styles.detailsTitle}>Request details (on-screen log for APK)</Text>
+              {requestLog.length > 0 ? (
+                <>
+                  <Text style={styles.detailsLabel}>Step log:</Text>
+                  <Text style={styles.detailsText} selectable>
+                    {requestLog.join('\n')}
+                  </Text>
+                </>
+              ) : null}
+              {requestDetails ? (
+                <>
+                  <Text style={styles.detailsLabel}>URL:</Text>
+                  <Text style={styles.detailsText} selectable>{requestDetails.url}</Text>
+                  <Text style={styles.detailsLabel}>Sending:</Text>
+                  <Text style={styles.detailsText} selectable>{requestDetails.sending}</Text>
+                  <Text style={styles.detailsLabel}>Format:</Text>
+                  <Text style={styles.detailsText} selectable>{requestDetails.format}</Text>
+                  <Text style={styles.detailsLabel}>Reached server:</Text>
+                  <Text style={styles.detailsText}>
+                    {requestDetails.reached === null ? '—' : requestDetails.reached ? 'Yes' : 'No'}
+                    {requestDetails.responseStatus != null ? ` (status ${requestDetails.responseStatus})` : ''}
+                  </Text>
+                  {requestDetails.error ? (
+                    <>
+                      <Text style={styles.detailsLabel}>Problem:</Text>
+                      <Text style={[styles.detailsText, styles.detailsError]} selectable>{requestDetails.error}</Text>
+                    </>
+                  ) : null}
+                </>
+              ) : null}
+              {(requestLog.length > 0 || requestDetails) && (
+                <TouchableOpacity
+                  style={styles.shareLogBtn}
+                  onPress={() => {
+                    const parts = [
+                      '--- Try-on debug log (APK) ---',
+                      ...requestLog,
+                      '',
+                      requestDetails ? [
+                        `URL: ${requestDetails.url}`,
+                        `Sending: ${requestDetails.sending}`,
+                        `Reached: ${requestDetails.reached ?? '—'}${requestDetails.responseStatus != null ? ` (${requestDetails.responseStatus})` : ''}`,
+                        requestDetails.error ? `Error: ${requestDetails.error}` : '',
+                      ].filter(Boolean).join('\n') : '',
+                      tryOnError ? `\nError details:\n${tryOnError}` : '',
+                    ].filter(Boolean);
+                    Share.share({ message: parts.join('\n'), title: 'Try-on debug log' });
+                  }}
+                >
+                  <Text style={styles.shareLogText}>Share log</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : null}
           <View style={styles.previewWrap}>
             <Image source={{ uri: capturedPhoto }} style={styles.previewImg} contentFit="contain" />
             {(loading || preprocessingLoading) && (
@@ -376,17 +502,6 @@ export default function TryOnScreen() {
               </View>
             )}
           </View>
-          {tryOnError ? (
-            <View style={styles.errorBox}>
-              <Text style={styles.errorTitle}>Error details</Text>
-              <Text style={styles.errorText} selectable>
-                {tryOnError}
-              </Text>
-              <TouchableOpacity style={styles.errorDismissBtn} onPress={() => setTryOnError(null)}>
-                <Text style={styles.errorDismissText}>Dismiss</Text>
-              </TouchableOpacity>
-            </View>
-          ) : null}
           <TouchableOpacity
             style={[styles.primaryBtn, (loading || preprocessingLoading) && styles.primaryBtnDisabled]}
             onPress={runTryOn}
@@ -394,7 +509,7 @@ export default function TryOnScreen() {
           >
             <Text style={styles.primaryBtnText}>Try On</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.secondaryBtn} onPress={() => { setCapturedPhoto(null); setPreprocessingCacheKey(null); setStep('choose'); setTryOnError(null); }} disabled={loading || preprocessingLoading}>
+          <TouchableOpacity style={styles.secondaryBtn} onPress={() => { setCapturedPhoto(null); setPreprocessingCacheKey(null); setStep('choose'); setTryOnError(null); setRequestDetails(null); setRequestLog([]); }} disabled={loading || preprocessingLoading}>
             <Text style={styles.secondaryBtnText}>Choose different photo</Text>
           </TouchableOpacity>
         </ScrollView>
@@ -440,6 +555,20 @@ const styles = StyleSheet.create({
   resultActions: { gap: 12 },
   message: { fontSize: 16, color: '#333', marginBottom: 16 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  detailsBox: {
+    backgroundColor: '#f5f5f5',
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+  },
+  detailsTitle: { fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 10 },
+  detailsLabel: { fontSize: 12, fontWeight: '600', color: '#555', marginTop: 6, marginBottom: 2 },
+  shareLogBtn: { marginTop: 12, paddingVertical: 10, paddingHorizontal: 16, backgroundColor: '#e0e0e0', borderRadius: 8, alignSelf: 'flex-start' },
+  shareLogText: { fontSize: 14, color: '#333', fontWeight: '500' },
+  detailsText: { fontSize: 12, color: '#333', lineHeight: 18 },
+  detailsError: { color: '#c62828', marginBottom: 4 },
   errorBox: {
     backgroundColor: '#fff0f0',
     borderWidth: 1,
