@@ -41,7 +41,14 @@ const getApiUrl = () => {
 const API_URL = getApiUrl();
 const API_BASE_URL = API_URL.replace('/api/try-on', '');
 const TRY_ON_URL = `${API_BASE_URL}/api/try-on`;
+const HEALTH_URL = `${API_BASE_URL}/health`;
 const TRY_ON_TIMEOUT_MS = 180000;
+
+// Headers some proxies (e.g. RunPod) expect; do not set Content-Type when sending FormData
+const API_HEADERS: Record<string, string> = {
+  'User-Agent': 'VirtualTryOn/1.0 (Android)',
+  'Accept': 'application/json',
+};
 
 function logError(tag: string, e: unknown, context?: Record<string, unknown>) {
   const err = e instanceof Error ? e : new Error(String(e));
@@ -183,6 +190,7 @@ export default function TryOnScreen() {
       formData.append('cloth_type', clothType);
       const res = await fetch(preprocessUrl, {
         method: 'POST',
+        headers: API_HEADERS,
         body: formData,
       });
       console.log('[PREPROCESS] Response', res.status, res.ok);
@@ -223,6 +231,18 @@ export default function TryOnScreen() {
     });
     const addLog = (line: string) => setRequestLog((prev) => [...prev, line]);
     console.log('[TRY-ON] Start', { TRY_ON_URL, cache_key: preprocessingCacheKey ?? 'none', cloth_type: clothTypeVal });
+
+    // Quick connectivity check (GET /health) so APK log shows if device can reach server at all
+    try {
+      const healthRes = await Promise.race([
+        fetch(HEALTH_URL, { method: 'GET', headers: API_HEADERS }),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('health timeout')), 10000)),
+      ]) as Response;
+      addLog(healthRes.ok ? '1.5 Connectivity: OK (health reached)' : `1.5 Connectivity: health returned ${healthRes.status}`);
+    } catch (healthErr: unknown) {
+      const msg = healthErr instanceof Error ? healthErr.message : String(healthErr);
+      addLog(`1.5 Connectivity: failed (${msg})`);
+    }
     try {
       const formData = new FormData();
       const personField = preprocessingCacheKey ? `cache_key: ${preprocessingCacheKey.slice(0, 12)}...` : 'person_image: (file from camera/gallery)';
@@ -300,6 +320,7 @@ export default function TryOnScreen() {
       console.log('[TRY-ON] Fetching', TRY_ON_URL);
       const response = await fetch(TRY_ON_URL, {
         method: 'POST',
+        headers: API_HEADERS,
         body: formData,
         signal: controller.signal,
       });
@@ -351,11 +372,14 @@ export default function TryOnScreen() {
         ? 'Try-on timed out. Check your connection and try again.'
         : formatErrorForAlert(e);
       const isNetworkFailed = (e?.message ?? '').toLowerCase().includes('network request failed');
+      const isRunPod = API_BASE_URL?.includes('runpod.net') ?? false;
       const devHint = __DEV__ && isNetworkFailed
         ? 'Dev: Start the backend (e.g. in CatVTON: python app_fastapi.py). It must listen on 0.0.0.0:8000. On a physical device, use same Wi‑Fi as PC; allow port 8000 in Windows Firewall if needed.'
         : !__DEV__ && (API_BASE_URL?.includes('localhost') || API_BASE_URL?.includes('10.0.2.2'))
           ? 'Hint: APK may be using wrong URL. Set extra.API_URL in app.json and rebuild.'
-          : null;
+          : !__DEV__ && isNetworkFailed && isRunPod
+            ? 'RunPod: Check step log for "1.5 Connectivity". If that failed, the phone cannot reach the proxy (Wi‑Fi, DNS, or pod offline). If 1.5 OK but step 6 failed, the proxy may be dropping large POST requests.'
+            : null;
       const fullDetail = [
         e?.name && e.name !== 'Error' ? `Type: ${e.name}` : null,
         e?.message ? `Message: ${e.message}` : null,
