@@ -1,10 +1,13 @@
+/**
+ * Try-on screen. Camera, image-picker, and file-system are lazy-loaded
+ * so opening this screen (tap on cloth) does not load native modules → no crash.
+ * Camera permission is only requested when user taps "Capture Photo".
+ */
 import { getClothingById } from '@/constants/clothing';
-import { CameraView, useCameraPermissions } from 'expo-camera';
 import Constants from 'expo-constants';
-import * as FileSystem from 'expo-file-system';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -57,7 +60,6 @@ export default function TryOnScreen() {
   const clothId = normalizeParam(params?.clothId);
   const clothingItem = getClothingById(clothId);
 
-  const [permission, requestPermission] = useCameraPermissions();
   const [step, setStep] = useState<'choose' | 'camera' | 'upload' | 'preview' | 'result'>('choose');
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
   const [resultImage, setResultImage] = useState<string | null>(null);
@@ -65,15 +67,8 @@ export default function TryOnScreen() {
   const [preprocessingLoading, setPreprocessingLoading] = useState(false);
   const [preprocessingCacheKey, setPreprocessingCacheKey] = useState<string | null>(null);
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
-  const cameraRef = useRef<CameraView>(null);
-  const [countdown, setCountdown] = useState<number | null>(null);
-  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (countdownRef.current) clearInterval(countdownRef.current);
-    };
-  }, []);
+  const [CameraComponent, setCameraComponent] = useState<React.ComponentType<{ onPhotoTaken: (uri: string) => void; onBack: () => void }> | null>(null);
+  const [cameraLoadError, setCameraLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!(loading || preprocessingLoading)) return;
@@ -83,52 +78,30 @@ export default function TryOnScreen() {
     return () => clearInterval(id);
   }, [loading, preprocessingLoading]);
 
-  const startCountdown = () => {
-    if (countdown !== null) return;
-    setCountdown(3);
-    countdownRef.current = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev === null || prev <= 1) {
-          if (countdownRef.current) {
-            clearInterval(countdownRef.current);
-            countdownRef.current = null;
-          }
-          setCountdown(null);
-          takePicture();
-          return null;
-        }
-        return prev - 1;
+  useEffect(() => {
+    if (step !== 'camera') return;
+    if (CameraComponent) return;
+    setCameraLoadError(null);
+    import('./try-on-camera')
+      .then((m) => setCameraComponent(() => m.CameraStep))
+      .catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e ?? 'Camera not available');
+        setCameraLoadError(msg);
       });
-    }, 1000);
-  };
+  }, [step, CameraComponent]);
 
-  const cancelCountdown = () => {
-    if (countdownRef.current) {
-      clearInterval(countdownRef.current);
-      countdownRef.current = null;
-    }
-    setCountdown(null);
-  };
+  const handlePhotoTaken = useCallback(
+    (uri: string) => {
+      setCapturedPhoto(uri);
+      setResultImage(null);
+      setPreprocessingCacheKey(null);
+      setStep('preview');
+      preprocessPersonImage(uri, clothingItem?.cloth_type ?? 'upper');
+    },
+    [clothingItem?.cloth_type]
+  );
 
-  const takePicture = async () => {
-    if (!cameraRef.current) return;
-    try {
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.8,
-        base64: false,
-      });
-      if (photo?.uri) {
-        setCapturedPhoto(photo.uri);
-        setResultImage(null);
-        setPreprocessingCacheKey(null);
-        setStep('preview');
-        preprocessPersonImage(photo.uri, clothingItem?.cloth_type ?? 'upper');
-      }
-    } catch (e) {
-      console.error(e);
-      Alert.alert('Error', 'Failed to capture photo');
-    }
-  };
+  const handleCameraBack = useCallback(() => setStep('choose'), []);
 
   const pickImage = async () => {
     try {
@@ -139,7 +112,7 @@ export default function TryOnScreen() {
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [3, 4],
         quality: 0.8,
@@ -200,13 +173,19 @@ export default function TryOnScreen() {
         formData.append('person_image', { uri: capturedPhoto, type: 'image/jpeg', name: 'person.jpg' } as any);
       }
       const clothSource = RNImage.resolveAssetSource(clothingItem?.image ?? require('@/assets/clothes/colourfull-sweatshirt.jpg'));
-      let clothUri = clothSource.uri;
+      let clothUri = clothSource?.uri ?? '';
       if (clothUri.startsWith('http')) {
-        const cacheDir = (FileSystem as any).cacheDirectory || (FileSystem as any).documentDirectory || '';
-        const ext = clothUri.includes('.png') ? 'png' : 'jpg';
-        const fileUri = `${cacheDir}cloth-${Date.now()}.${ext}`;
-        await FileSystem.downloadAsync(clothUri, fileUri);
-        clothUri = fileUri;
+        try {
+          const FileSystem = await import('expo-file-system');
+          const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
+          const ext = clothUri.includes('.png') ? 'png' : 'jpg';
+          const fileUri = `${cacheDir}cloth-${Date.now()}.${ext}`;
+          await FileSystem.downloadAsync(clothUri, fileUri);
+          clothUri = fileUri;
+        } catch (fsErr: unknown) {
+          const msg = fsErr instanceof Error ? fsErr.message : String(fsErr);
+          throw new Error(`Could not download cloth image: ${msg}`);
+        }
       }
       const mime = clothUri.split('.').pop()?.toLowerCase() === 'png' ? 'image/png' : 'image/jpeg';
       formData.append('cloth_image', { uri: clothUri, type: mime, name: `cloth.${clothUri.split('.').pop()?.split('?')[0] || 'jpg'}` } as any);
@@ -237,23 +216,6 @@ export default function TryOnScreen() {
     }
   };
 
-  if (!permission) return <View style={styles.container} />;
-  if (!permission.granted && step === 'camera') {
-    return (
-      <SafeAreaView style={styles.container}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => setStep('choose')}>
-          <Text style={styles.backText}>← Back</Text>
-        </TouchableOpacity>
-        <View style={styles.centered}>
-          <Text style={styles.message}>Camera permission is needed</Text>
-          <TouchableOpacity style={styles.primaryBtn} onPress={requestPermission}>
-            <Text style={styles.primaryBtnText}>Grant Permission</Text>
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   const handleBack = () => {
     if (step === 'camera') setStep('choose');
     else if (step === 'preview') { setCapturedPhoto(null); setStep('choose'); }
@@ -283,23 +245,24 @@ export default function TryOnScreen() {
       )}
 
       {step === 'camera' && (
-        <View style={styles.cameraWrap}>
-          <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="front">
-            {countdown !== null && (
-              <View style={styles.countdownOverlay}>
-                <Text style={styles.countdownText}>{countdown}</Text>
-                <TouchableOpacity style={styles.cancelCountdown} onPress={cancelCountdown}>
-                  <Text style={styles.cancelCountdownText}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-            <View style={styles.cameraButtons}>
-              <TouchableOpacity style={styles.captureBtn} onPress={startCountdown} disabled={countdown !== null}>
-                <View style={styles.captureBtnInner} />
+        <>
+          {cameraLoadError ? (
+            <View style={styles.centered}>
+              <Text style={styles.message}>{cameraLoadError}</Text>
+              <Text style={styles.hint}>Use "Upload Photo" to choose an image from your gallery.</Text>
+              <TouchableOpacity style={styles.primaryBtn} onPress={() => setStep('choose')}>
+                <Text style={styles.primaryBtnText}>← Back</Text>
               </TouchableOpacity>
             </View>
-          </CameraView>
-        </View>
+          ) : CameraComponent ? (
+            <CameraComponent onPhotoTaken={handlePhotoTaken} onBack={handleCameraBack} />
+          ) : (
+            <View style={styles.centered}>
+              <ActivityIndicator size="large" color="#000" />
+              <Text style={styles.message}>Loading camera...</Text>
+            </View>
+          )}
+        </>
       )}
 
       {step === 'preview' && capturedPhoto && (
@@ -358,14 +321,6 @@ const styles = StyleSheet.create({
   primaryBtnText: { color: '#fff', fontSize: 17, fontWeight: '600' },
   secondaryBtn: { paddingVertical: 16, alignItems: 'center', marginBottom: 12 },
   secondaryBtnText: { color: '#007AFF', fontSize: 17, fontWeight: '500' },
-  cameraWrap: { flex: 1 },
-  countdownOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  countdownText: { fontSize: 100, fontWeight: 'bold', color: '#fff' },
-  cancelCountdown: { marginTop: 24, paddingHorizontal: 24, paddingVertical: 12, backgroundColor: 'rgba(255,59,48,0.9)', borderRadius: 24 },
-  cancelCountdownText: { color: '#fff', fontSize: 17, fontWeight: '600' },
-  cameraButtons: { position: 'absolute', bottom: 40, left: 0, right: 0, alignItems: 'center' },
-  captureBtn: { width: 72, height: 72, borderRadius: 36, backgroundColor: 'rgba(255,255,255,0.3)', borderWidth: 4, borderColor: '#fff', justifyContent: 'center', alignItems: 'center' },
-  captureBtnInner: { width: 52, height: 52, borderRadius: 26, backgroundColor: '#fff' },
   previewWrap: { width: '100%', aspectRatio: 3/4, backgroundColor: '#000', borderRadius: 12, overflow: 'hidden', marginBottom: 20 },
   previewImg: { width: '100%', height: '100%' },
   loadingOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },

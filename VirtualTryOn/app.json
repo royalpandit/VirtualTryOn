@@ -20,7 +20,6 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "usesCleartextTraffic": true,
       "package": "com.yashvardhan0012.oui"
     },
     "web": {
@@ -31,6 +30,8 @@
       "./plugins/withBuildConfig.js",
       "expo-router",
       "expo-image-picker",
+      "expo-camera",
+      ["expo-build-properties", { "android": { "usesCleartextTraffic": true } }],
       [
         "expo-splash-screen",
         {
