@@ -107,7 +107,7 @@ export default function TryOnScreen() {
     if (!cameraRef.current) return;
     try {
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.95,
+        quality: 0.8,
         base64: false,
       });
       if (photo?.uri) {
@@ -133,7 +133,7 @@ export default function TryOnScreen() {
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
       aspect: [3, 4],
-      quality: 0.95,
+      quality: 0.8,
     });
     if (!result.canceled && result.assets[0]?.uri) {
       setCapturedPhoto(result.assets[0].uri);
