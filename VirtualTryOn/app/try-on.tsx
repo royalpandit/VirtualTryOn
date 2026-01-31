@@ -4,6 +4,7 @@
  * Camera permission is only requested when user taps "Capture Photo".
  */
 import { getClothingById } from '@/constants/clothing';
+import { Asset } from 'expo-asset';
 import Constants from 'expo-constants';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -212,13 +213,27 @@ export default function TryOnScreen() {
         formData.append('person_image', { uri: capturedPhoto, type: 'image/jpeg', name: 'person.jpg' } as any);
         console.log('[TRY-ON] Using person_image uri', capturedPhoto?.slice?.(0, 50) ?? capturedPhoto);
       }
-      const clothSource = RNImage.resolveAssetSource(clothingItem?.image ?? require('@/assets/clothes/colourfull-sweatshirt.jpg'));
+      const imageModule = clothingItem?.image ?? require('@/assets/clothes/colourfull-sweatshirt.jpg');
+      const clothSource = RNImage.resolveAssetSource(imageModule);
       console.log('[TRY-ON] clothSource', { uri: clothSource?.uri, type: typeof clothSource?.uri, raw: clothSource });
       let clothUri: string = typeof clothSource?.uri === 'string' ? clothSource.uri : '';
       if (!clothUri && typeof clothSource === 'number') {
         clothUri = String(clothSource);
       }
-      if (clothUri.startsWith('http')) {
+      const isRealFileUri = clothUri.startsWith('file://') || clothUri.startsWith('content://') || clothUri.startsWith('http');
+      if (!isRealFileUri && (clothUri.length < 2 || clothUri === String(Number(clothUri)))) {
+        console.log('[TRY-ON] Resolving bundled cloth asset via expo-asset (APK-safe)...');
+        try {
+          const asset = Asset.fromModule(imageModule);
+          await asset.downloadAsync();
+          clothUri = asset.localUri ?? asset.uri ?? '';
+          console.log('[TRY-ON] Cloth asset localUri', clothUri ? clothUri.slice(0, 60) + '...' : 'none');
+        } catch (assetErr: unknown) {
+          logError('TRY-ON cloth asset', assetErr, { clothUri: clothUri?.slice(0, 40) });
+          const msg = assetErr instanceof Error ? assetErr.message : String(assetErr);
+          throw new Error(`Could not load cloth image: ${msg}`);
+        }
+      } else if (clothUri.startsWith('http')) {
         try {
           console.log('[TRY-ON] Downloading cloth from URL...');
           const FileSystem = await import('expo-file-system/legacy');
