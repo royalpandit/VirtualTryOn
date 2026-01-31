@@ -176,7 +176,7 @@ export default function TryOnScreen() {
       let clothUri = clothSource?.uri ?? '';
       if (clothUri.startsWith('http')) {
         try {
-          const FileSystem = await import('expo-file-system');
+          const FileSystem = await import('expo-file-system/legacy');
           const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
           const ext = clothUri.includes('.png') ? 'png' : 'jpg';
           const fileUri = `${cacheDir}cloth-${Date.now()}.${ext}`;
@@ -190,11 +190,6 @@ export default function TryOnScreen() {
       const mime = clothUri.split('.').pop()?.toLowerCase() === 'png' ? 'image/png' : 'image/jpeg';
       formData.append('cloth_image', { uri: clothUri, type: mime, name: `cloth.${clothUri.split('.').pop()?.split('?')[0] || 'jpg'}` } as any);
       formData.append('cloth_type', clothingItem?.cloth_type ?? 'upper');
-
-      const healthRes = await fetch(`${API_BASE_URL}/health`);
-      if (!healthRes.ok) throw new Error('Backend unreachable');
-      const healthData = await healthRes.json();
-      if (healthData.status === 'loading') throw new Error('Backend still loading. Please wait.');
 
       const response = await fetch(API_URL, {
         method: 'POST',

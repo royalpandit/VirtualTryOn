@@ -183,3 +183,5 @@ export function CameraStep({ onPhotoTaken, onBack }: CameraStepProps) {
     </SafeAreaView>
   );
 }
+
+export default CameraStep;
