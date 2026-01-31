@@ -13,10 +13,18 @@ export default function HomeScreen() {
   const [category, setCategory] = useState<'All' | 'Woman' | 'Man' | 'Kid'>('All');
 
   const onClothPress = (item: (typeof CLOTHING_ITEMS)[0]) => {
-    router.push({
-      pathname: '/try-on',
-      params: { clothId: item.id, clothName: item.name },
-    });
+    try {
+      const clothId = typeof item?.id === 'string' ? item.id : String(item?.id ?? '1');
+      const clothName = typeof item?.name === 'string' ? item.name : 'Item';
+      router.push({
+        pathname: '/try-on',
+        params: { clothId, clothName },
+      });
+    } catch (e) {
+      if (__DEV__) console.error('onClothPress error:', e);
+      // Fallback: navigate with default id so app does not crash
+      router.push({ pathname: '/try-on', params: { clothId: '1', clothName: 'Item' } });
+    }
   };
 
   return (

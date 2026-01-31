@@ -44,10 +44,18 @@ const LOADING_MESSAGES = [
   'Creating your look...',
 ];
 
+// Normalize param (expo-router on some Android can return string | string[])
+function normalizeParam(value: unknown): string {
+  if (value == null) return '1';
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'string') return value[0];
+  return String(value);
+}
+
 export default function TryOnScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ clothId: string; clothName: string }>();
-  const clothId = params.clothId ?? '1';
+  const params = useLocalSearchParams<{ clothId?: string | string[]; clothName?: string | string[] }>();
+  const clothId = normalizeParam(params?.clothId);
   const clothingItem = getClothingById(clothId);
 
   const [permission, requestPermission] = useCameraPermissions();
@@ -115,7 +123,7 @@ export default function TryOnScreen() {
         setResultImage(null);
         setPreprocessingCacheKey(null);
         setStep('preview');
-        preprocessPersonImage(photo.uri, clothingItem.cloth_type);
+        preprocessPersonImage(photo.uri, clothingItem?.cloth_type ?? 'upper');
       }
     } catch (e) {
       console.error(e);
@@ -140,7 +148,7 @@ export default function TryOnScreen() {
       setResultImage(null);
       setPreprocessingCacheKey(null);
       setStep('preview');
-      preprocessPersonImage(result.assets[0].uri, clothingItem.cloth_type);
+      preprocessPersonImage(result.assets[0].uri, clothingItem?.cloth_type ?? 'upper');
     }
   };
 
@@ -177,7 +185,7 @@ export default function TryOnScreen() {
       } else {
         formData.append('person_image', { uri: capturedPhoto, type: 'image/jpeg', name: 'person.jpg' } as any);
       }
-      const clothSource = RNImage.resolveAssetSource(clothingItem.image);
+      const clothSource = RNImage.resolveAssetSource(clothingItem?.image ?? require('@/assets/clothes/colourfull-sweatshirt.jpg'));
       let clothUri = clothSource.uri;
       if (clothUri.startsWith('http')) {
         const cacheDir = (FileSystem as any).cacheDirectory || (FileSystem as any).documentDirectory || '';
@@ -188,7 +196,7 @@ export default function TryOnScreen() {
       }
       const mime = clothUri.split('.').pop()?.toLowerCase() === 'png' ? 'image/png' : 'image/jpeg';
       formData.append('cloth_image', { uri: clothUri, type: mime, name: `cloth.${clothUri.split('.').pop()?.split('?')[0] || 'jpg'}` } as any);
-      formData.append('cloth_type', clothingItem.cloth_type);
+      formData.append('cloth_type', clothingItem?.cloth_type ?? 'upper');
 
       const healthRes = await fetch(`${API_BASE_URL}/health`);
       if (!healthRes.ok) throw new Error('Backend unreachable');
@@ -246,9 +254,9 @@ export default function TryOnScreen() {
 
       {step === 'choose' && (
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-          <Text style={styles.title}>Try on: {clothingItem.name}</Text>
+          <Text style={styles.title}>Try on: {clothingItem?.name ?? 'Item'}</Text>
           <View style={styles.clothPreview}>
-            <Image source={clothingItem.image} style={styles.clothPreviewImg} contentFit="contain" />
+            <Image source={clothingItem?.image ?? require('@/assets/clothes/colourfull-sweatshirt.jpg')} style={styles.clothPreviewImg} contentFit="contain" />
           </View>
           <Text style={styles.hint}>Capture or upload a photo of yourself to try on this item.</Text>
           <TouchableOpacity style={styles.primaryBtn} onPress={() => setStep('camera')}>
