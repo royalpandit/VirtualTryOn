@@ -3,7 +3,6 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system';
 import { Image } from 'expo-image';
-import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -132,23 +131,38 @@ export default function TryOnScreen() {
   };
 
   const pickImage = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Allow access to your photos to upload.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [3, 4],
-      quality: 0.8,
-    });
-    if (!result.canceled && result.assets[0]?.uri) {
-      setCapturedPhoto(result.assets[0].uri);
-      setResultImage(null);
-      setPreprocessingCacheKey(null);
-      setStep('preview');
-      preprocessPersonImage(result.assets[0].uri, clothingItem?.cloth_type ?? 'upper');
+    try {
+      const ImagePicker = await import('expo-image-picker');
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission needed', 'Allow access to your photos to upload.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [3, 4],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]?.uri) {
+        setCapturedPhoto(result.assets[0].uri);
+        setResultImage(null);
+        setPreprocessingCacheKey(null);
+        setStep('preview');
+        preprocessPersonImage(result.assets[0].uri, clothingItem?.cloth_type ?? 'upper');
+      }
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      const isImagePickerMissing = /ExponentImagePicker|native module|image.?picker/i.test(message);
+      if (isImagePickerMissing) {
+        Alert.alert(
+          'Photo picker not available',
+          'Upload from gallery is not available in this build. Please use "Capture Photo" to take a picture with the camera instead.',
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert('Error', message || 'Failed to open photo picker. Try "Capture Photo" instead.');
+      }
     }
   };
 

@@ -30,6 +30,7 @@
     "plugins": [
       "./plugins/withBuildConfig.js",
       "expo-router",
+      "expo-image-picker",
       [
         "expo-splash-screen",
         {
