@@ -257,8 +257,10 @@ export default function TryOnScreen() {
 
       const imageModule = clothingItem?.image ?? require('@/assets/clothes/colourfull-sweatshirt.jpg');
       let clothUri: string;
-      const clothSource = RNImage.resolveAssetSource(imageModule);
-      const rawUri = typeof clothSource?.uri === 'string' ? clothSource.uri : typeof clothSource === 'number' ? String(clothSource) : '';
+      // Support URL strings (e.g. Cloudinary) - avoids APK asset/resize issues
+      const rawUriFromUrl = typeof imageModule === 'string' && imageModule.startsWith('http') ? imageModule : '';
+      const clothSource = rawUriFromUrl ? null : RNImage.resolveAssetSource(imageModule as number);
+      const rawUri = rawUriFromUrl || (typeof clothSource?.uri === 'string' ? clothSource.uri : typeof clothSource === 'number' ? String(clothSource) : '');
       addLog(`2. clothSource: uri type=${typeof clothSource?.uri}${rawUri ? `, starts ${rawUri.slice(0, 20)}...` : ''}`);
       console.log('[TRY-ON] clothSource', { uri: rawUri?.slice(0, 50), type: typeof clothSource?.uri });
 
@@ -299,10 +301,50 @@ export default function TryOnScreen() {
         console.error('[TRY-ON] Invalid clothUri', { clothUri, length: clothUri?.length });
         throw new Error('Cloth image URI is missing. Try another item.');
       }
-      const mime = clothUri.split('.').pop()?.toLowerCase() === 'png' ? 'image/png' : 'image/jpeg';
-      const clothName = `cloth.${clothUri.split('.').pop()?.split('?')[0] || 'jpg'}`;
-      formData.append('cloth_image', { uri: clothUri, type: mime, name: clothName } as any);
-      const clothUriType = clothUri.startsWith('file://') ? 'file' : clothUri.startsWith('http') ? 'http' : 'other';
+      // Resize cloth to keep POST small so RunPod proxy doesn't drop the request (step 6 failure)
+      const MAX_CLOTH_DIM = 1024;
+      const CLOTH_JPEG_QUALITY = 0.85;
+      let uploadClothUri = clothUri;
+      let mime: string = clothUri.split('.').pop()?.toLowerCase() === 'png' ? 'image/png' : 'image/jpeg';
+      const tryResize = async (uri: string): Promise<{ uri: string } | null> => {
+        const { manipulateAsync: manipulate, SaveFormat } = await import('expo-image-manipulator');
+        const resized = await manipulate(uri, [{ resize: { width: MAX_CLOTH_DIM } }], {
+          compress: CLOTH_JPEG_QUALITY,
+          format: SaveFormat.JPEG,
+        });
+        return { uri: resized.uri };
+      };
+      try {
+        let resized = await tryResize(clothUri).catch(() => null);
+        // In APK, Asset.localUri often isn't accepted by ImageManipulator; copy to a .jpg path and retry
+        if (!resized) {
+          try {
+            const FileSystem = await import('expo-file-system/legacy');
+            const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
+            const copyPath = `${cacheDir}cloth_resize_${Date.now()}.jpg`;
+            await FileSystem.copyAsync({ from: clothUri, to: copyPath });
+            addLog('4.4 Cloth copied to .jpg path, retrying resize');
+            resized = await tryResize(copyPath).catch(() => null);
+          } catch (copyErr: unknown) {
+            const msg = copyErr instanceof Error ? copyErr.message : String(copyErr);
+            addLog(`4.4 Copy for resize: ${msg.slice(0, 50)}`);
+          }
+        }
+        if (resized) {
+          uploadClothUri = resized.uri;
+          mime = 'image/jpeg';
+          addLog(`4.5 Cloth resized for proxy (max ${MAX_CLOTH_DIM}px, JPEG ${CLOTH_JPEG_QUALITY})`);
+        } else {
+          addLog('4.5 Cloth resize failed (using original - POST may be large)');
+        }
+      } catch (resizeErr: unknown) {
+        const errMsg = resizeErr instanceof Error ? resizeErr.message : String(resizeErr);
+        console.warn('[TRY-ON] Cloth resize failed, using original', resizeErr);
+        addLog(`4.5 Cloth resize error: ${errMsg.slice(0, 50)} (using original)`);
+      }
+      const clothName = `cloth.${uploadClothUri.split('.').pop()?.split('?')[0] || 'jpg'}`;
+      formData.append('cloth_image', { uri: uploadClothUri, type: mime, name: clothName } as any);
+      const clothUriType = uploadClothUri.startsWith('file://') ? 'file' : uploadClothUri.startsWith('http') ? 'http' : 'other';
       addLog(`5. FormData ready (cloth: ${clothUriType}, ${mime})`);
       setRequestDetails((prev) => (prev ? {
         ...prev,
@@ -414,7 +456,7 @@ export default function TryOnScreen() {
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
           <Text style={styles.title}>Try on: {clothingItem?.name ?? 'Item'}</Text>
           <View style={styles.clothPreview}>
-            <Image source={clothingItem?.image ?? require('@/assets/clothes/colourfull-sweatshirt.jpg')} style={styles.clothPreviewImg} contentFit="contain" />
+            <Image source={typeof clothingItem?.image === 'string' ? { uri: clothingItem.image } : (clothingItem?.image ?? require('@/assets/clothes/colourfull-sweatshirt.jpg'))} style={styles.clothPreviewImg} contentFit="contain" />
           </View>
           <Text style={styles.hint}>Capture or upload a photo of yourself to try on this item.</Text>
           <TouchableOpacity style={styles.primaryBtn} onPress={() => setStep('camera')}>

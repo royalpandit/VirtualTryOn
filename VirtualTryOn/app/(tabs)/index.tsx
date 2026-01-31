@@ -68,7 +68,7 @@ export default function HomeScreen() {
               activeOpacity={0.85}
             >
               <View style={styles.cardImageWrap}>
-                <Image source={item.image} style={styles.cardImage} contentFit="cover" />
+                <Image source={typeof item.image === 'string' ? { uri: item.image } : item.image} style={styles.cardImage} contentFit="cover" />
                 <TouchableOpacity style={styles.heartBtn} onPress={() => {}}>
                   <Text style={styles.heartIcon}>♡</Text>
                 </TouchableOpacity>

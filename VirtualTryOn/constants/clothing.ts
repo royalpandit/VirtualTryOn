@@ -1,12 +1,18 @@
 /** cloth_type: 'upper' = torso only, 'lower' = pants/jeans, 'overall' = full suit / dress */
-export const CLOTHING_ITEMS = [
-  { id: '1', name: 'Colorful Sweatshirt', price: '$25', cloth_type: 'upper' as const, image: require('@/assets/clothes/colourfull-sweatshirt.jpg') },
-  { id: '2', name: 'Green T-Shirt', price: '$20', cloth_type: 'upper' as const, image: require('@/assets/clothes/green-tshirt.png') },
-  { id: '3', name: 'Purple Shirt', price: '$28', cloth_type: 'upper' as const, image: require('@/assets/clothes/purple-shirt.png') },
-  { id: '4', name: 'Classic Suit', price: '$45', cloth_type: 'upper' as const, image: require('@/assets/clothes/suit.png') },
-  { id: '5', name: 'Baggy Black Jeans', price: '$32', cloth_type: 'lower' as const, image: require('@/assets/clothes/baggy_black_jeans.png') },
-  { id: '6', name: 'Blue Shirt', price: '$26', cloth_type: 'upper' as const, image: require('@/assets/clothes/blue_shirt.png') },
-  { id: '7', name: 'Full Suit', price: '$48', cloth_type: 'overall' as const, image: require('@/assets/clothes/full_suit.png') },
+/** image: require() for bundled assets, or string URL (e.g. Cloudinary) - URLs avoid APK resize issues */
+export const CLOTHING_ITEMS: Array<{
+  id: string;
+  name: string;
+  price: string;
+  cloth_type: 'upper' | 'lower' | 'overall';
+  image: number | string;
+}> = [
+  { id: '1', name: 'full suit', price: '$48', cloth_type: 'overall', image: 'https://res.cloudinary.com/dp3vs4mxa/image/upload/v1769873236/full_suit_hurxcg.png' },
+  { id: '2', name: 'blue shirt', price: '$26', cloth_type: 'upper', image: 'https://res.cloudinary.com/dp3vs4mxa/image/upload/v1769873233/blue_shirt_xzvm4u.png' },
+  { id: '3', name: 'colourfull-sweatshirt', price: '$25', cloth_type: 'upper', image: 'https://res.cloudinary.com/dp3vs4mxa/image/upload/v1769873233/colourfull-sweatshirt_v8mpbp.png' },
+  { id: '4', name: 'Classic suit', price: '$45', cloth_type: 'upper', image: 'https://res.cloudinary.com/dp3vs4mxa/image/upload/v1769873233/green-tshirt_f3hnxr.png' },
+  { id: '5', name: 'purple-shirt', price: '$28', cloth_type: 'upper', image: 'https://res.cloudinary.com/dp3vs4mxa/image/upload/v1769873233/purple-shirt_g9dnxn.png' },
+  { id: '6', name: 'baggy black jeans', price: '$32', cloth_type: 'lower', image: 'https://res.cloudinary.com/dp3vs4mxa/image/upload/v1769873232/baggy_black_jeans_tjiqvm.png' },
 ];
 
 export function getClothingById(id: string) {
