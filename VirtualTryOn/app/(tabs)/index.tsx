@@ -1,24 +1,83 @@
 import { CLOTHING_ITEMS } from '@/constants/clothing';
+import { getSession } from '@/lib/auth';
+import { getSellerProducts, type OuiSellerProduct } from '@/lib/ouiApi';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
-import { Dimensions, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, Dimensions, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = (width - 20 * 2 - 12 * 2) / 2;
 
+type UiClothItem = {
+  id: string;
+  name: string;
+  price: string;
+  cloth_type: 'upper' | 'lower' | 'overall';
+  image: number | string;
+};
+
 export default function HomeScreen() {
   const router = useRouter();
   const [category, setCategory] = useState<'All' | 'Woman' | 'Man' | 'Kid'>('All');
 
-  const onClothPress = (item: (typeof CLOTHING_ITEMS)[0]) => {
+  const [loading, setLoading] = useState(true);
+  const [sellerId, setSellerId] = useState<number | null>(null);
+  const [products, setProducts] = useState<OuiSellerProduct[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const session = await getSession();
+        if (!mounted) return;
+        const id = session.user?.id ?? null;
+        setSellerId(id);
+        if (!id) {
+          setProducts([]);
+          return;
+        }
+        const res = await getSellerProducts({ sellerId: id, page: 1, perPage: 50, accessToken: session.accessToken });
+        if (!mounted) return;
+        setProducts(Array.isArray(res?.data?.products) ? res.data.products : []);
+      } catch (e: unknown) {
+        if (!mounted) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        Alert.alert('Failed to load products', msg || 'Unable to fetch products');
+        setProducts([]);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  const uiItems: UiClothItem[] = useMemo(() => {
+    if (products.length === 0) return CLOTHING_ITEMS;
+    return products.map((p) => {
+      const id = String(p.id);
+      const price = p.price != null ? `₹${p.price}` : '';
+      const image = p.image && typeof p.image === 'string' ? p.image : 'https://via.placeholder.com/512x512.png?text=Cloth';
+      return {
+        id,
+        name: p.name ?? 'Item',
+        price,
+        cloth_type: 'upper',
+        image,
+      };
+    });
+  }, [products]);
+
+  const onClothPress = (item: UiClothItem) => {
     try {
       const clothId = typeof item?.id === 'string' ? item.id : String(item?.id ?? '1');
       const clothName = typeof item?.name === 'string' ? item.name : 'Item';
+      const clothImageUrl = typeof item?.image === 'string' ? item.image : '';
+      const clothType = item?.cloth_type ?? 'upper';
       router.push({
         pathname: '/try-on',
-        params: { clothId, clothName },
+        params: { clothId, clothName, clothImageUrl, clothType },
       });
     } catch (e) {
       if (__DEV__) console.error('onClothPress error:', e);
@@ -60,7 +119,12 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.grid}>
-          {CLOTHING_ITEMS.map((item) => (
+          {loading ? (
+            <View style={styles.loadingWrap}>
+              <ActivityIndicator size="large" color="#000" />
+              <Text style={styles.loadingText}>Loading products...</Text>
+            </View>
+          ) : uiItems.map((item) => (
             <TouchableOpacity
               key={item.id}
               style={styles.card}
@@ -171,6 +235,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     gap: 12,
     paddingBottom: 40,
+  },
+  loadingWrap: {
+    width: '100%',
+    paddingVertical: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#444',
+    fontWeight: '500',
   },
   card: {
     width: CARD_WIDTH,

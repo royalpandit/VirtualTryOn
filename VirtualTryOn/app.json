@@ -51,6 +51,7 @@
     },
     "extra": {
       "API_URL": "https://purtaj9z73guff-8000.proxy.runpod.net/api/try-on",
+      "OUI_API_BASE_URL": "https://oui.corescent.in",
       "router": {},
       "eas": {
         "projectId": "f3e84de5-7fd4-465e-8122-4b3f616de346"

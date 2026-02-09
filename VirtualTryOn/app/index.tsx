@@ -1,10 +1,30 @@
+import { getSession } from '@/lib/auth';
 import { useRouter } from 'expo-router';
-import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function SplashScreen() {
   const router = useRouter();
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const session = await getSession();
+        if (!mounted) return;
+        if (session?.accessToken && session?.user?.id) router.replace('/(tabs)');
+        else router.replace('/login');
+      } catch {
+        if (!mounted) return;
+        router.replace('/login');
+      } finally {
+        if (mounted) setCheckingSession(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [router]);
 
   return (
     <View style={styles.container}>
@@ -17,12 +37,8 @@ export default function SplashScreen() {
             Virtually Try On Every Smile :)
           </Text>
         </View>
-        <TouchableOpacity
-          style={styles.getStartedButton}
-          onPress={() => router.replace('/login')}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.getStartedText}>Get Started</Text>
+        <TouchableOpacity style={styles.getStartedButton} onPress={() => router.replace('/login')} activeOpacity={0.8} disabled={checkingSession}>
+          {checkingSession ? <ActivityIndicator color="#fff" /> : <Text style={styles.getStartedText}>Get Started</Text>}
         </TouchableOpacity>
       </SafeAreaView>
     </View>

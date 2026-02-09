@@ -82,9 +82,21 @@ function normalizeParam(value: unknown): string {
 
 export default function TryOnScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ clothId?: string | string[]; clothName?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    clothId?: string | string[];
+    clothName?: string | string[];
+    clothImageUrl?: string | string[];
+    clothType?: string | string[];
+  }>();
   const clothId = normalizeParam(params?.clothId);
+  const clothTypeParam = normalizeParam(params?.clothType);
+  const clothImageUrl = normalizeParam(params?.clothImageUrl);
   const clothingItem = getClothingById(clothId);
+  const clothTypeFromParams = (clothTypeParam === 'upper' || clothTypeParam === 'lower' || clothTypeParam === 'overall')
+    ? clothTypeParam
+    : null;
+  const effectiveClothType = clothTypeFromParams ?? (clothingItem?.cloth_type ?? 'upper');
+  const effectiveClothImage = clothImageUrl && clothImageUrl !== '1' ? clothImageUrl : clothingItem?.image;
 
   const [step, setStep] = useState<'choose' | 'camera' | 'upload' | 'preview' | 'result'>('choose');
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
@@ -136,9 +148,9 @@ export default function TryOnScreen() {
       setResultImage(null);
       setPreprocessingCacheKey(null);
       setStep('preview');
-      preprocessPersonImage(uri, clothingItem?.cloth_type ?? 'upper');
+      preprocessPersonImage(uri, effectiveClothType);
     },
-    [clothingItem?.cloth_type]
+    [effectiveClothType]
   );
 
   const handleCameraBack = useCallback(() => setStep('choose'), []);
@@ -162,7 +174,7 @@ export default function TryOnScreen() {
         setResultImage(null);
         setPreprocessingCacheKey(null);
         setStep('preview');
-        preprocessPersonImage(result.assets[0].uri, clothingItem?.cloth_type ?? 'upper');
+        preprocessPersonImage(result.assets[0].uri, effectiveClothType);
       }
     } catch (e: unknown) {
       logError('PICK_IMAGE', e);
@@ -221,7 +233,7 @@ export default function TryOnScreen() {
     setLoading(true);
     setResultImage(null);
     setTryOnError(null);
-    const clothTypeVal = clothingItem?.cloth_type ?? 'upper';
+    const clothTypeVal = effectiveClothType;
     setRequestLog([`0. API URL: ${TRY_ON_URL}`, '1. Start']);
     setRequestDetails({
       url: TRY_ON_URL,
@@ -255,7 +267,7 @@ export default function TryOnScreen() {
       }
       formData.append('cloth_type', clothTypeVal);
 
-      const imageModule = clothingItem?.image ?? require('@/assets/clothes/colourfull-sweatshirt.jpg');
+      const imageModule = effectiveClothImage ?? require('@/assets/clothes/colourfull-sweatshirt.jpg');
       let clothUri: string;
       // Support URL strings (e.g. Cloudinary) - avoids APK asset/resize issues
       const rawUriFromUrl = typeof imageModule === 'string' && imageModule.startsWith('http') ? imageModule : '';

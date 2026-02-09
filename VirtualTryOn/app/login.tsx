@@ -1,6 +1,9 @@
+import { loginSeller } from '@/lib/auth';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
+    ActivityIndicator,
+    Alert,
     KeyboardAvoidingView,
     Platform,
     StyleSheet,
@@ -15,9 +18,24 @@ export default function LoginScreen() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleSignIn = () => {
-    router.replace('/(tabs)');
+  const handleSignIn = async () => {
+    if (loading) return;
+    if (!email.trim() || !password) {
+      Alert.alert('Missing info', 'Please enter email and password.');
+      return;
+    }
+    setLoading(true);
+    try {
+      await loginSeller({ email: email.trim(), password });
+      router.replace('/(tabs)');
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      Alert.alert('Login failed', message || 'Unable to login');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -44,7 +62,7 @@ export default function LoginScreen() {
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
-              editable={true}
+              editable={!loading}
             />
             <Text style={[styles.label, styles.labelTop]}>Password</Text>
             <TextInput
@@ -54,15 +72,15 @@ export default function LoginScreen() {
               value={password}
               onChangeText={setPassword}
               secureTextEntry
-              editable={true}
+              editable={!loading}
             />
             <TouchableOpacity style={styles.forgot} onPress={() => {}}>
               <Text style={styles.forgotText}>Forgot password?</Text>
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity style={styles.signInButton} onPress={handleSignIn} activeOpacity={0.8}>
-            <Text style={styles.signInText}>Sign in</Text>
+          <TouchableOpacity style={[styles.signInButton, loading && styles.signInButtonDisabled]} onPress={handleSignIn} activeOpacity={0.8} disabled={loading}>
+            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.signInText}>Sign in</Text>}
           </TouchableOpacity>
 
           <View style={styles.footer}>
@@ -141,6 +159,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  signInButtonDisabled: {
+    opacity: 0.7,
   },
   signInText: {
     color: '#fff',
