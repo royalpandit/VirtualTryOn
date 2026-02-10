@@ -1,23 +1,29 @@
-import { loginSeller } from '@/lib/auth';
+import { loginAdmin, loginSeller } from '@/lib/auth';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    KeyboardAvoidingView,
-    Platform,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+type LoginRole = 'seller' | 'admin';
+
+const DEFAULT_EMAIL = 'seller@gmail.com';
+const DEFAULT_PASSWORD = '1234';
+
 export default function LoginScreen() {
   const router = useRouter();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [role, setRole] = useState<LoginRole>('seller');
+  const [email, setEmail] = useState(DEFAULT_EMAIL);
+  const [password, setPassword] = useState(DEFAULT_PASSWORD);
   const [loading, setLoading] = useState(false);
 
   const handleSignIn = async () => {
@@ -28,7 +34,11 @@ export default function LoginScreen() {
     }
     setLoading(true);
     try {
-      await loginSeller({ email: email.trim(), password });
+      if (role === 'admin') {
+        await loginAdmin({ email: email.trim(), password });
+      } else {
+        await loginSeller({ email: email.trim(), password });
+      }
       router.replace('/(tabs)');
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
@@ -51,11 +61,28 @@ export default function LoginScreen() {
             <Text style={styles.welcome}>Sign in to continue</Text>
           </View>
 
+          <View style={styles.roleRow}>
+            <TouchableOpacity
+              style={[styles.roleChip, role === 'seller' && styles.roleChipActive]}
+              onPress={() => setRole('seller')}
+              disabled={loading}
+            >
+              <Text style={[styles.roleChipText, role === 'seller' && styles.roleChipTextActive]}>Seller</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.roleChip, role === 'admin' && styles.roleChipActive]}
+              onPress={() => setRole('admin')}
+              disabled={loading}
+            >
+              <Text style={[styles.roleChipText, role === 'admin' && styles.roleChipTextActive]}>Admin</Text>
+            </TouchableOpacity>
+          </View>
+
           <View style={styles.form}>
             <Text style={styles.label}>Email</Text>
             <TextInput
               style={styles.input}
-              placeholder="you@example.com"
+              placeholder="seller@gmail.com"
               placeholderTextColor="#999"
               value={email}
               onChangeText={setEmail}
@@ -74,7 +101,7 @@ export default function LoginScreen() {
               secureTextEntry
               editable={!loading}
             />
-            <TouchableOpacity style={styles.forgot} onPress={() => {}}>
+            <TouchableOpacity style={styles.forgot} onPress={() => Alert.alert('Forgot password', 'Please contact support or use the web portal to reset your password.')}>
               <Text style={styles.forgotText}>Forgot password?</Text>
             </TouchableOpacity>
           </View>
@@ -85,7 +112,7 @@ export default function LoginScreen() {
 
           <View style={styles.footer}>
             <Text style={styles.footerText}>Don't have an account? </Text>
-            <TouchableOpacity onPress={() => {}}>
+            <TouchableOpacity onPress={() => Alert.alert('Sign up', 'Seller sign up is available on the web portal. Contact your admin for access.')}>
               <Text style={styles.signUpLink}>Sign up</Text>
             </TouchableOpacity>
           </View>
@@ -110,18 +137,44 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
   },
   header: {
-    marginBottom: 36,
+    marginBottom: 24,
+  },
+  roleRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 24,
+  },
+  roleChip: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    backgroundColor: '#fafafa',
+    alignItems: 'center',
+  },
+  roleChipActive: {
+    backgroundColor: '#6B4EAA',
+    borderColor: '#6B4EAA',
+  },
+  roleChipText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#333',
+  },
+  roleChipTextActive: {
+    color: '#fff',
   },
   logo: {
     fontSize: 36,
     fontWeight: '800',
-    color: '#000',
+    color: '#6B4EAA',
     letterSpacing: 0.5,
     marginBottom: 8,
   },
   welcome: {
     fontSize: 17,
-    color: '#666',
+    color: '#555',
   },
   form: {
     marginBottom: 28,
@@ -129,7 +182,7 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#333',
+    color: '#1a1a2e',
     marginBottom: 8,
   },
   labelTop: {
@@ -137,13 +190,13 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: '#e0d8f0',
     borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 14,
     fontSize: 16,
-    color: '#000',
-    backgroundColor: '#fafafa',
+    color: '#1a1a2e',
+    backgroundColor: '#faf8fc',
   },
   forgot: {
     alignSelf: 'flex-end',
@@ -151,10 +204,10 @@ const styles = StyleSheet.create({
   },
   forgotText: {
     fontSize: 14,
-    color: '#007AFF',
+    color: '#6B4EAA',
   },
   signInButton: {
-    backgroundColor: '#000',
+    backgroundColor: '#6B4EAA',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -176,11 +229,11 @@ const styles = StyleSheet.create({
   },
   footerText: {
     fontSize: 15,
-    color: '#666',
+    color: '#555',
   },
   signUpLink: {
     fontSize: 15,
-    color: '#007AFF',
+    color: '#6B4EAA',
     fontWeight: '600',
   },
 });

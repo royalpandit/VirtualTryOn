@@ -21,7 +21,7 @@ export type CameraStepProps = {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
   backBtn: { padding: 16, paddingTop: 8 },
-  backText: { fontSize: 17, color: '#007AFF', fontWeight: '500' },
+  backText: { fontSize: 17, color: '#6B4EAA', fontWeight: '500' },
   cameraWrap: { flex: 1 },
   countdownOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -64,7 +64,7 @@ const styles = StyleSheet.create({
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   message: { fontSize: 16, color: '#333', marginBottom: 16 },
   primaryBtn: {
-    backgroundColor: '#000',
+    backgroundColor: '#6B4EAA',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',

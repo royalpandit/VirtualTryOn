@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 
 const TOKEN_KEY = 'oui_access_token';
 const USER_KEY = 'oui_user';
+const ROLE_KEY = 'oui_role';
 
 export async function setAccessToken(token: string | null) {
   if (!token) {
@@ -20,7 +21,11 @@ export type StoredUser = {
   name?: string;
   email?: string;
   phone?: string;
+  image?: string | null;
+  status?: number;
 } | null;
+
+export type LoginRole = 'seller' | 'admin';
 
 export async function setStoredUser(user: StoredUser) {
   if (!user) {
@@ -38,4 +43,17 @@ export async function getStoredUser(): Promise<StoredUser> {
   } catch {
     return null;
   }
+}
+
+export async function setLoginRole(role: LoginRole | null) {
+  if (!role) {
+    await SecureStore.deleteItemAsync(ROLE_KEY);
+    return;
+  }
+  await SecureStore.setItemAsync(ROLE_KEY, role);
+}
+
+export async function getLoginRole(): Promise<LoginRole | null> {
+  const r = await SecureStore.getItemAsync(ROLE_KEY);
+  return r === 'seller' || r === 'admin' ? r : null;
 }

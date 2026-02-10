@@ -1,112 +1,301 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import {
+  getCategoryList,
+  getChildCategoriesBySubcategory,
+  getOuiAssetUrl,
+  getSubcategoriesByCategory,
+  type OuiCategory,
+  type OuiChildCategory,
+  type OuiSubCategory,
+} from '@/lib/ouiApi';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  FlatList,
+  Image,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { Collapsible } from '@/components/ui/collapsible';
-import { ExternalLink } from '@/components/external-link';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Fonts } from '@/constants/theme';
+type Level = 'category' | 'subcategory' | 'child';
+type ListItem = { id: number; name: string; imageUrl: string | null };
 
-export default function TabTwoScreen() {
+export default function ExploreScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams<{ categoryId?: string; categoryName?: string }>();
+  const [level, setLevel] = useState<Level>('category');
+  const [categoryId, setCategoryId] = useState<number | null>(null);
+  const [subcategoryId, setSubcategoryId] = useState<number | null>(null);
+  const [categories, setCategories] = useState<OuiCategory[]>([]);
+  const [subcategories, setSubcategories] = useState<OuiSubCategory[]>([]);
+  const [childCategories, setChildCategories] = useState<OuiChildCategory[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadCategories = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getCategoryList();
+      const list = Array.isArray(res?.categories) ? res.categories : [];
+      setCategories(list.filter((c) => c.status !== 0));
+      setLevel('category');
+      setCategoryId(null);
+      setSubcategoryId(null);
+      setSubcategories([]);
+      setChildCategories([]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load categories');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadCategories();
+  }, [loadCategories]);
+
+  useEffect(() => {
+    const id = params.categoryId ? parseInt(params.categoryId, 10) : null;
+    if (id && !Number.isNaN(id)) {
+      setCategoryId(id);
+      setLevel('subcategory');
+      setLoading(true);
+      getSubcategoriesByCategory(id)
+        .then((res) => {
+          setSubcategories(Array.isArray(res?.subCategories) ? res.subCategories : []);
+        })
+        .catch(() => setSubcategories([]))
+        .finally(() => setLoading(false));
+    }
+  }, [params.categoryId]);
+
+  const handleCategoryPress = useCallback((id: number) => {
+    setCategoryId(id);
+    setLevel('subcategory');
+    setLoading(true);
+    setError(null);
+    getSubcategoriesByCategory(id)
+      .then((res) => setSubcategories(Array.isArray(res?.subCategories) ? res.subCategories : []))
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : 'Failed to load');
+        setSubcategories([]);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSubcategoryPress = useCallback((id: number) => {
+    setSubcategoryId(id);
+    setLevel('child');
+    setLoading(true);
+    setError(null);
+    getChildCategoriesBySubcategory(id)
+      .then((res) => setChildCategories(Array.isArray(res?.childCategories) ? res.childCategories : []))
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : 'Failed to load');
+        setChildCategories([]);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const goBack = useCallback(() => {
+    if (level === 'child') {
+      setLevel('subcategory');
+      setSubcategoryId(null);
+      setChildCategories([]);
+    } else if (level === 'subcategory') {
+      setLevel('category');
+      setCategoryId(null);
+      setSubcategories([]);
+    } else {
+      router.back();
+    }
+  }, [level, router]);
+
+  const listItems: ListItem[] =
+    level === 'category'
+      ? categories.map((c) => ({ id: c.id, name: c.name, imageUrl: getOuiAssetUrl(c.image) ?? null }))
+      : level === 'subcategory'
+        ? subcategories.map((s) => ({ id: s.id, name: s.name, imageUrl: getOuiAssetUrl(s.image) ?? null }))
+        : childCategories.map((c) => ({ id: c.id, name: c.name, imageUrl: getOuiAssetUrl(c.image) ?? null }));
+
+  const title =
+    level === 'category'
+      ? 'Categories'
+      : level === 'subcategory'
+        ? 'Subcategories'
+        : 'Child categories';
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#D0D0D0', dark: '#353636' }}
-      headerImage={
-        <IconSymbol
-          size={310}
-          color="#808080"
-          name="chevron.left.forwardslash.chevron.right"
-          style={styles.headerImage}
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <View style={styles.header}>
+        <TouchableOpacity onPress={goBack} style={styles.backBtn}>
+          <Text style={styles.backText}>← Back</Text>
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>{title}</Text>
+      </View>
+
+      {error ? (
+        <View style={styles.centered}>
+          <Text style={styles.errorText}>{error}</Text>
+          <TouchableOpacity style={styles.retryBtn} onPress={loadCategories}>
+            <Text style={styles.retryText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      ) : loading && listItems.length === 0 ? (
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color="#6B4EAA" />
+        </View>
+      ) : listItems.length === 0 ? (
+        <View style={styles.centered}>
+          <Text style={styles.emptyTitle}>
+            {level === 'category' ? 'No categories' : level === 'subcategory' ? 'No subcategories' : 'No child categories'}
+          </Text>
+          <Text style={styles.emptySubtext}>
+            {level === 'category'
+              ? 'There are no categories to show right now.'
+              : level === 'subcategory'
+                ? 'This category has no subcategories.'
+                : 'This subcategory has no child categories.'}
+          </Text>
+          <TouchableOpacity style={styles.retryBtn} onPress={goBack}>
+            <Text style={styles.retryText}>Go back</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <FlatList
+          data={listItems}
+          keyExtractor={(item) => String(item.id)}
+          contentContainerStyle={styles.listContent}
+          renderItem={({ item }) => (
+            <TouchableOpacity
+              style={styles.row}
+              onPress={() =>
+                level === 'category'
+                  ? handleCategoryPress(item.id)
+                  : level === 'subcategory'
+                    ? handleSubcategoryPress(item.id)
+                    : undefined
+              }
+              activeOpacity={0.7}
+            >
+              {item.imageUrl ? (
+                <Image source={{ uri: item.imageUrl }} style={styles.rowImage} />
+              ) : (
+                <View style={styles.rowImagePlaceholder} />
+              )}
+              <Text style={styles.rowText}>{item.name}</Text>
+              {(level === 'category' || level === 'subcategory') && <Text style={styles.chevron}>›</Text>}
+            </TouchableOpacity>
+          )}
         />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText
-          type="title"
-          style={{
-            fontFamily: Fonts.rounded,
-          }}>
-          Explore
-        </ThemedText>
-      </ThemedView>
-      <ThemedText>This app includes example code to help you get started.</ThemedText>
-      <Collapsible title="File-based routing">
-        <ThemedText>
-          This app has two screens:{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/explore.tsx</ThemedText>
-        </ThemedText>
-        <ThemedText>
-          The layout file in <ThemedText type="defaultSemiBold">app/(tabs)/_layout.tsx</ThemedText>{' '}
-          sets up the tab navigator.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/router/introduction">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Android, iOS, and web support">
-        <ThemedText>
-          You can open this project on Android, iOS, and the web. To open the web version, press{' '}
-          <ThemedText type="defaultSemiBold">w</ThemedText> in the terminal running this project.
-        </ThemedText>
-      </Collapsible>
-      <Collapsible title="Images">
-        <ThemedText>
-          For static images, you can use the <ThemedText type="defaultSemiBold">@2x</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">@3x</ThemedText> suffixes to provide files for
-          different screen densities
-        </ThemedText>
-        <Image
-          source={require('@/assets/images/react-logo.png')}
-          style={{ width: 100, height: 100, alignSelf: 'center' }}
-        />
-        <ExternalLink href="https://reactnative.dev/docs/images">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Light and dark mode components">
-        <ThemedText>
-          This template has light and dark mode support. The{' '}
-          <ThemedText type="defaultSemiBold">useColorScheme()</ThemedText> hook lets you inspect
-          what the user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Animations">
-        <ThemedText>
-          This template includes an example of an animated component. The{' '}
-          <ThemedText type="defaultSemiBold">components/HelloWave.tsx</ThemedText> component uses
-          the powerful{' '}
-          <ThemedText type="defaultSemiBold" style={{ fontFamily: Fonts.mono }}>
-            react-native-reanimated
-          </ThemedText>{' '}
-          library to create a waving hand animation.
-        </ThemedText>
-        {Platform.select({
-          ios: (
-            <ThemedText>
-              The <ThemedText type="defaultSemiBold">components/ParallaxScrollView.tsx</ThemedText>{' '}
-              component provides a parallax effect for the header image.
-            </ThemedText>
-          ),
-        })}
-      </Collapsible>
-    </ParallaxScrollView>
+      )}
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  headerImage: {
-    color: '#808080',
-    bottom: -90,
-    left: -35,
-    position: 'absolute',
+  container: {
+    flex: 1,
+    backgroundColor: '#fff',
   },
-  titleContainer: {
+  header: {
     flexDirection: 'row',
-    gap: 8,
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#eee',
+  },
+  backBtn: {
+    paddingVertical: 8,
+    paddingRight: 12,
+  },
+  backText: {
+    fontSize: 17,
+    color: '#6B4EAA',
+    fontWeight: '500',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#1a1a2e',
+  },
+  listContent: {
+    paddingVertical: 8,
+    paddingBottom: 40,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#eee',
+  },
+  rowImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    marginRight: 14,
+    backgroundColor: '#f0f0f0',
+  },
+  rowImagePlaceholder: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    marginRight: 14,
+    backgroundColor: '#eee',
+  },
+  rowText: {
+    flex: 1,
+    fontSize: 16,
+    color: '#000',
+    fontWeight: '500',
+  },
+  chevron: {
+    fontSize: 20,
+    color: '#999',
+  },
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  errorText: {
+    fontSize: 15,
+    color: '#c00',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  retryBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: '#6B4EAA',
+    borderRadius: 10,
+    marginTop: 16,
+  },
+  retryText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    paddingHorizontal: 24,
   },
 });

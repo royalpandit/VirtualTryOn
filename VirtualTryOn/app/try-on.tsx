@@ -15,7 +15,6 @@ import {
     Platform,
     Image as RNImage,
     ScrollView,
-    Share,
     StyleSheet,
     Text,
     TouchableOpacity,
@@ -89,6 +88,7 @@ export default function TryOnScreen() {
     clothType?: string | string[];
   }>();
   const clothId = normalizeParam(params?.clothId);
+  const clothNameParam = normalizeParam(params?.clothName);
   const clothTypeParam = normalizeParam(params?.clothType);
   const clothImageUrl = normalizeParam(params?.clothImageUrl);
   const clothingItem = getClothingById(clothId);
@@ -97,6 +97,7 @@ export default function TryOnScreen() {
     : null;
   const effectiveClothType = clothTypeFromParams ?? (clothingItem?.cloth_type ?? 'upper');
   const effectiveClothImage = clothImageUrl && clothImageUrl !== '1' ? clothImageUrl : clothingItem?.image;
+  const displayClothName = clothNameParam && clothNameParam !== '1' ? clothNameParam : (clothingItem?.name ?? 'Item');
 
   const [step, setStep] = useState<'choose' | 'camera' | 'upload' | 'preview' | 'result'>('choose');
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
@@ -226,8 +227,9 @@ export default function TryOnScreen() {
   };
 
   const runTryOn = async () => {
-    if (!capturedPhoto || !clothingItem) {
-      console.error('[TRY-ON] Abort: missing capturedPhoto or clothingItem', { capturedPhoto: !!capturedPhoto, clothingItem: !!clothingItem });
+    const hasCloth = !!(effectiveClothImage && effectiveClothImage !== '1');
+    if (!capturedPhoto || !hasCloth) {
+      console.error('[TRY-ON] Abort: missing capturedPhoto or cloth image', { capturedPhoto: !!capturedPhoto, hasCloth });
       return;
     }
     setLoading(true);
@@ -460,15 +462,27 @@ export default function TryOnScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <TouchableOpacity style={styles.backBtn} onPress={handleBack}>
-        <Text style={styles.backText}>← Back</Text>
-      </TouchableOpacity>
+      {step !== 'camera' ? (
+        <TouchableOpacity style={styles.backBtn} onPress={handleBack}>
+          <Text style={styles.backText}>← Back</Text>
+        </TouchableOpacity>
+      ) : null}
 
       {step === 'choose' && (
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-          <Text style={styles.title}>Try on: {clothingItem?.name ?? 'Item'}</Text>
+          <Text style={styles.title}>Try on: {displayClothName}</Text>
           <View style={styles.clothPreview}>
-            <Image source={typeof clothingItem?.image === 'string' ? { uri: clothingItem.image } : (clothingItem?.image ?? require('@/assets/clothes/colourfull-sweatshirt.jpg'))} style={styles.clothPreviewImg} contentFit="contain" />
+            <Image
+              source={
+                typeof effectiveClothImage === 'string' && effectiveClothImage.startsWith('http')
+                  ? { uri: effectiveClothImage }
+                  : typeof effectiveClothImage === 'string'
+                    ? { uri: effectiveClothImage }
+                    : (effectiveClothImage ?? require('@/assets/clothes/colourfull-sweatshirt.jpg'))
+              }
+              style={styles.clothPreviewImg}
+              contentFit="contain"
+            />
           </View>
           <Text style={styles.hint}>Capture or upload a photo of yourself to try on this item.</Text>
           <TouchableOpacity style={styles.primaryBtn} onPress={() => setStep('camera')}>
@@ -494,7 +508,7 @@ export default function TryOnScreen() {
             <CameraComponent onPhotoTaken={handlePhotoTaken} onBack={handleCameraBack} />
           ) : (
             <View style={styles.centered}>
-              <ActivityIndicator size="large" color="#000" />
+              <ActivityIndicator size="large" color="#6B4EAA" />
               <Text style={styles.message}>Loading camera...</Text>
             </View>
           )}
@@ -503,72 +517,12 @@ export default function TryOnScreen() {
 
       {step === 'preview' && capturedPhoto && (
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-          {/* When error: show log first so it's visible without scrolling (APK has no console) */}
           {tryOnError ? (
             <View style={styles.errorBox}>
-              <Text style={styles.errorTitle}>Error details</Text>
-              <Text style={styles.errorText} selectable>
-                {tryOnError}
-              </Text>
+              <Text style={styles.errorText} selectable>{tryOnError}</Text>
               <TouchableOpacity style={styles.errorDismissBtn} onPress={() => { setTryOnError(null); setRequestDetails(null); setRequestLog([]); }}>
                 <Text style={styles.errorDismissText}>Dismiss</Text>
               </TouchableOpacity>
-            </View>
-          ) : null}
-          {(requestDetails || requestLog.length > 0) ? (
-            <View style={styles.detailsBox}>
-              <Text style={styles.detailsTitle}>Request details (on-screen log for APK)</Text>
-              {requestLog.length > 0 ? (
-                <>
-                  <Text style={styles.detailsLabel}>Step log:</Text>
-                  <Text style={styles.detailsText} selectable>
-                    {requestLog.join('\n')}
-                  </Text>
-                </>
-              ) : null}
-              {requestDetails ? (
-                <>
-                  <Text style={styles.detailsLabel}>URL:</Text>
-                  <Text style={styles.detailsText} selectable>{requestDetails.url}</Text>
-                  <Text style={styles.detailsLabel}>Sending:</Text>
-                  <Text style={styles.detailsText} selectable>{requestDetails.sending}</Text>
-                  <Text style={styles.detailsLabel}>Format:</Text>
-                  <Text style={styles.detailsText} selectable>{requestDetails.format}</Text>
-                  <Text style={styles.detailsLabel}>Reached server:</Text>
-                  <Text style={styles.detailsText}>
-                    {requestDetails.reached === null ? '—' : requestDetails.reached ? 'Yes' : 'No'}
-                    {requestDetails.responseStatus != null ? ` (status ${requestDetails.responseStatus})` : ''}
-                  </Text>
-                  {requestDetails.error ? (
-                    <>
-                      <Text style={styles.detailsLabel}>Problem:</Text>
-                      <Text style={[styles.detailsText, styles.detailsError]} selectable>{requestDetails.error}</Text>
-                    </>
-                  ) : null}
-                </>
-              ) : null}
-              {(requestLog.length > 0 || requestDetails) && (
-                <TouchableOpacity
-                  style={styles.shareLogBtn}
-                  onPress={() => {
-                    const parts = [
-                      '--- Try-on debug log (APK) ---',
-                      ...requestLog,
-                      '',
-                      requestDetails ? [
-                        `URL: ${requestDetails.url}`,
-                        `Sending: ${requestDetails.sending}`,
-                        `Reached: ${requestDetails.reached ?? '—'}${requestDetails.responseStatus != null ? ` (${requestDetails.responseStatus})` : ''}`,
-                        requestDetails.error ? `Error: ${requestDetails.error}` : '',
-                      ].filter(Boolean).join('\n') : '',
-                      tryOnError ? `\nError details:\n${tryOnError}` : '',
-                    ].filter(Boolean);
-                    Share.share({ message: parts.join('\n'), title: 'Try-on debug log' });
-                  }}
-                >
-                  <Text style={styles.shareLogText}>Share log</Text>
-                </TouchableOpacity>
-              )}
             </View>
           ) : null}
           <View style={styles.previewWrap}>
@@ -613,18 +567,18 @@ export default function TryOnScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
   backBtn: { padding: 16, paddingTop: 8 },
-  backText: { fontSize: 17, color: '#007AFF', fontWeight: '500' },
+  backText: { fontSize: 17, color: '#6B4EAA', fontWeight: '500' },
   scroll: { flex: 1 },
   scrollContent: { padding: 20, paddingBottom: 40 },
-  title: { fontSize: 22, fontWeight: '700', color: '#000', marginBottom: 16 },
+  title: { fontSize: 22, fontWeight: '700', color: '#1a1a2e', marginBottom: 16 },
   clothPreview: { width: '100%', height: 200, backgroundColor: '#f5f5f5', borderRadius: 12, overflow: 'hidden', marginBottom: 20 },
   clothPreviewImg: { width: '100%', height: '100%' },
   hint: { fontSize: 15, color: '#666', marginBottom: 24 },
-  primaryBtn: { backgroundColor: '#000', paddingVertical: 16, borderRadius: 12, alignItems: 'center', marginBottom: 12 },
+  primaryBtn: { backgroundColor: '#6B4EAA', paddingVertical: 16, borderRadius: 12, alignItems: 'center', marginBottom: 12 },
   primaryBtnDisabled: { opacity: 0.6 },
   primaryBtnText: { color: '#fff', fontSize: 17, fontWeight: '600' },
-  secondaryBtn: { paddingVertical: 16, alignItems: 'center', marginBottom: 12 },
-  secondaryBtnText: { color: '#007AFF', fontSize: 17, fontWeight: '500' },
+  secondaryBtn: { paddingVertical: 16, alignItems: 'center', marginBottom: 12, borderWidth: 1, borderColor: '#6B4EAA', borderRadius: 12 },
+  secondaryBtnText: { color: '#6B4EAA', fontSize: 17, fontWeight: '500' },
   previewWrap: { width: '100%', aspectRatio: 3/4, backgroundColor: '#000', borderRadius: 12, overflow: 'hidden', marginBottom: 20 },
   previewImg: { width: '100%', height: '100%' },
   loadingOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
@@ -633,20 +587,6 @@ const styles = StyleSheet.create({
   resultActions: { gap: 12 },
   message: { fontSize: 16, color: '#333', marginBottom: 16 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  detailsBox: {
-    backgroundColor: '#f5f5f5',
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 16,
-  },
-  detailsTitle: { fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 10 },
-  detailsLabel: { fontSize: 12, fontWeight: '600', color: '#555', marginTop: 6, marginBottom: 2 },
-  shareLogBtn: { marginTop: 12, paddingVertical: 10, paddingHorizontal: 16, backgroundColor: '#e0e0e0', borderRadius: 8, alignSelf: 'flex-start' },
-  shareLogText: { fontSize: 14, color: '#333', fontWeight: '500' },
-  detailsText: { fontSize: 12, color: '#333', lineHeight: 18 },
-  detailsError: { color: '#c62828', marginBottom: 4 },
   errorBox: {
     backgroundColor: '#fff0f0',
     borderWidth: 1,
@@ -655,8 +595,7 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 16,
   },
-  errorTitle: { fontSize: 14, fontWeight: '600', color: '#c62828', marginBottom: 8 },
-  errorText: { fontSize: 13, color: '#b71c1c', lineHeight: 20 },
+  errorText: { fontSize: 14, color: '#b71c1c', lineHeight: 20 },
   errorDismissBtn: { marginTop: 10, alignSelf: 'flex-start' },
-  errorDismissText: { fontSize: 14, color: '#007AFF', fontWeight: '500' },
+  errorDismissText: { fontSize: 14, color: '#6B4EAA', fontWeight: '500' },
 });
