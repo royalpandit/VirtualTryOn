@@ -1,29 +1,54 @@
 import { getSession } from '@/lib/auth';
-import { useRouter } from 'expo-router';
+import { useRouter, SplashScreen } from 'expo-router';
+import * as NativeSplash from 'expo-splash-screen';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-export default function SplashScreen() {
+function hideNativeSplash() {
+  try {
+    (SplashScreen as { hide?: () => void }).hide?.();
+    SplashScreen.hideAsync?.();
+    NativeSplash.hideAsync?.();
+  } catch (_) {}
+}
+
+export default function InitialScreen() {
   const router = useRouter();
   const [checkingSession, setCheckingSession] = useState(true);
 
+  // Hide native splash as soon as this first screen mounts — important for APK
+  useEffect(() => {
+    hideNativeSplash();
+  }, []);
+
   useEffect(() => {
     let mounted = true;
+    const timeout = setTimeout(() => {
+      if (!mounted) return;
+      setCheckingSession(false);
+      router.replace('/login');
+    }, 4000);
+
     (async () => {
       try {
         const session = await getSession();
         if (!mounted) return;
+        clearTimeout(timeout);
         if (session?.accessToken && session?.user?.id) router.replace('/(tabs)');
         else router.replace('/login');
       } catch {
         if (!mounted) return;
+        clearTimeout(timeout);
         router.replace('/login');
       } finally {
         if (mounted) setCheckingSession(false);
       }
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+      clearTimeout(timeout);
+    };
   }, [router]);
 
   return (

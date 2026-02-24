@@ -3,7 +3,7 @@
  * so opening this screen (tap on cloth) does not load native modules → no crash.
  * Camera permission is only requested when user taps "Capture Photo".
  */
-import { getClothingById } from '@/constants/clothing';
+import { CLOTHING_ITEMS } from '@/constants/clothing';
 import { Asset } from 'expo-asset';
 import Constants from 'expo-constants';
 import { Image } from 'expo-image';
@@ -18,7 +18,7 @@ import {
     StyleSheet,
     Text,
     TouchableOpacity,
-    View,
+    View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -64,6 +64,15 @@ function formatErrorForAlert(e: unknown): string {
   return String(e);
 }
 
+function getResultCacheKey(args: {
+  basePersonUri?: string | null;
+  clothId: string;
+  clothType: string;
+}): string {
+  const baseKey = `uri:${args.basePersonUri ?? 'none'}`;
+  return `${baseKey}__cloth:${args.clothId}__type:${args.clothType}`;
+}
+
 const LOADING_MESSAGES = [
   'Uploading photo...',
   'Preparing your image...',
@@ -91,13 +100,20 @@ export default function TryOnScreen() {
   const clothNameParam = normalizeParam(params?.clothName);
   const clothTypeParam = normalizeParam(params?.clothType);
   const clothImageUrl = normalizeParam(params?.clothImageUrl);
-  const clothingItem = getClothingById(clothId);
+  const clothingItem = CLOTHING_ITEMS.find((i) => i.id === clothId) ?? null;
   const clothTypeFromParams = (clothTypeParam === 'upper' || clothTypeParam === 'lower' || clothTypeParam === 'overall')
     ? clothTypeParam
     : null;
   const effectiveClothType = clothTypeFromParams ?? (clothingItem?.cloth_type ?? 'upper');
   const effectiveClothImage = clothImageUrl && clothImageUrl !== '1' ? clothImageUrl : clothingItem?.image;
-  const displayClothName = clothNameParam && clothNameParam !== '1' ? clothNameParam : (clothingItem?.name ?? 'Item');
+
+  const [selectedClothId, setSelectedClothId] = useState<string>(clothId);
+  const selectedCloth = CLOTHING_ITEMS.find((i) => i.id === selectedClothId) ?? null;
+  const selectedClothType = selectedCloth?.cloth_type ?? effectiveClothType;
+  const selectedClothImage = selectedCloth?.image ?? effectiveClothImage;
+  const displayClothName = clothNameParam && clothNameParam !== '1'
+    ? clothNameParam
+    : (selectedCloth?.name ?? clothingItem?.name ?? 'Item');
 
   const [step, setStep] = useState<'choose' | 'camera' | 'upload' | 'preview' | 'result'>('choose');
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
@@ -105,6 +121,8 @@ export default function TryOnScreen() {
   const [loading, setLoading] = useState(false);
   const [preprocessingLoading, setPreprocessingLoading] = useState(false);
   const [preprocessingCacheKey, setPreprocessingCacheKey] = useState<string | null>(null);
+  const [preprocessingClothType, setPreprocessingClothType] = useState<'upper' | 'lower' | 'overall' | null>(null);
+  const [basePersonUri, setBasePersonUri] = useState<string | null>(null);
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [CameraComponent, setCameraComponent] = useState<React.ComponentType<{ onPhotoTaken: (uri: string) => void; onBack: () => void }> | null>(null);
   const [cameraLoadError, setCameraLoadError] = useState<string | null>(null);
@@ -118,6 +136,7 @@ export default function TryOnScreen() {
     error?: string;
   } | null>(null);
   const [requestLog, setRequestLog] = useState<string[]>([]);
+  const [resultCache, setResultCache] = useState<Record<string, string>>({});
 
   useEffect(() => {
     console.log('[TRY-ON] Screen mounted, API_BASE_URL=', API_BASE_URL, 'TRY_ON_URL=', TRY_ON_URL);
@@ -146,12 +165,15 @@ export default function TryOnScreen() {
   const handlePhotoTaken = useCallback(
     (uri: string) => {
       setCapturedPhoto(uri);
+      setBasePersonUri(uri);
       setResultImage(null);
       setPreprocessingCacheKey(null);
+      setPreprocessingClothType(null);
+      setResultCache({});
       setStep('preview');
-      preprocessPersonImage(uri, effectiveClothType);
+      preprocessPersonImage(uri, selectedClothType);
     },
-    [effectiveClothType]
+    [selectedClothType]
   );
 
   const handleCameraBack = useCallback(() => setStep('choose'), []);
@@ -166,35 +188,28 @@ export default function TryOnScreen() {
       }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        allowsEditing: true,
-        aspect: [3, 4],
-        quality: 0.8,
+        allowsEditing: false,
+        quality: 1,
       });
       if (!result.canceled && result.assets[0]?.uri) {
         setCapturedPhoto(result.assets[0].uri);
+        setBasePersonUri(result.assets[0].uri);
         setResultImage(null);
         setPreprocessingCacheKey(null);
+        setPreprocessingClothType(null);
+        setResultCache({});
         setStep('preview');
-        preprocessPersonImage(result.assets[0].uri, effectiveClothType);
+        preprocessPersonImage(result.assets[0].uri, selectedClothType);
       }
     } catch (e: unknown) {
       logError('PICK_IMAGE', e);
-      const message = e instanceof Error ? e.message : String(e);
-      const isImagePickerMissing = /ExponentImagePicker|native module|image.?picker/i.test(message);
-      if (isImagePickerMissing) {
-        Alert.alert(
-          'Photo picker not available',
-          'Upload from gallery is not available in this build. Please use "Capture Photo" to take a picture with the camera instead.',
-          [{ text: 'OK' }]
-        );
-      } else {
-        Alert.alert('Error', message || 'Failed to open photo picker. Try "Capture Photo" instead.');
-      }
+      Alert.alert('Error', formatErrorForAlert(e));
     }
   };
 
-  const preprocessPersonImage = async (photoUri: string, clothType: string = 'upper') => {
+  const preprocessPersonImage = async (photoUri: string, clothType: string = 'upper'): Promise<string | null> => {
     setPreprocessingLoading(true);
+    setPreprocessingClothType((clothType === 'upper' || clothType === 'lower' || clothType === 'overall') ? clothType : null);
     const preprocessUrl = `${API_BASE_URL}/api/preprocess-person`;
     console.log('[PREPROCESS] Start', { preprocessUrl, clothType, photoUriLen: photoUri?.length });
     try {
@@ -212,6 +227,7 @@ export default function TryOnScreen() {
         if (data?.success && data?.cache_key) {
           setPreprocessingCacheKey(data.cache_key);
           console.log('[PREPROCESS] Success cache_key', data.cache_key?.slice(0, 16) + '...');
+          return data.cache_key as string;
         } else {
           console.warn('[PREPROCESS] OK but no cache_key', Object.keys(data ?? {}));
         }
@@ -219,23 +235,44 @@ export default function TryOnScreen() {
         const text = await res.text();
         console.error('[PREPROCESS] Error', res.status, text?.slice(0, 200));
       }
-    } catch (e) {
+    } catch (e: unknown) {
       logError('PREPROCESS', e, { preprocessUrl, clothType });
     } finally {
       setPreprocessingLoading(false);
     }
+
+    return null;
   };
 
   const runTryOn = async () => {
-    const hasCloth = !!(effectiveClothImage && effectiveClothImage !== '1');
-    if (!capturedPhoto || !hasCloth) {
-      console.error('[TRY-ON] Abort: missing capturedPhoto or cloth image', { capturedPhoto: !!capturedPhoto, hasCloth });
+    if (!(basePersonUri || capturedPhoto) || !selectedClothImage) {
+      console.error('[TRY-ON] Abort: missing person photo or cloth image', {
+        capturedPhoto: Boolean(capturedPhoto),
+        basePersonUri: Boolean(basePersonUri),
+        hasClothImage: Boolean(selectedClothImage),
+      });
       return;
     }
+
+    const clothTypeVal = selectedClothType;
+    const baseUriForCache = basePersonUri ?? capturedPhoto;
+
+    // Serve from cache immediately (fast switching across items)
+    const cacheKeyForResult = getResultCacheKey({
+      basePersonUri: baseUriForCache,
+      clothId: selectedClothId,
+      clothType: clothTypeVal,
+    });
+    const cachedImage = resultCache[cacheKeyForResult];
+    if (cachedImage) {
+      setResultImage(cachedImage);
+      setStep('result');
+      return;
+    }
+
     setLoading(true);
-    setResultImage(null);
+    setLoadingMessageIndex(0);
     setTryOnError(null);
-    const clothTypeVal = effectiveClothType;
     setRequestLog([`0. API URL: ${TRY_ON_URL}`, '1. Start']);
     setRequestDetails({
       url: TRY_ON_URL,
@@ -245,6 +282,18 @@ export default function TryOnScreen() {
     });
     const addLog = (line: string) => setRequestLog((prev) => [...prev, line]);
     console.log('[TRY-ON] Start', { TRY_ON_URL, cache_key: preprocessingCacheKey ?? 'none', cloth_type: clothTypeVal });
+
+    // cache_key is cloth_type specific on the backend; if user switches cloth type, force re-preprocess
+    let activeCacheKey: string | null = preprocessingCacheKey;
+    if (activeCacheKey && preprocessingClothType && preprocessingClothType !== clothTypeVal) {
+      addLog(`1.2 Cache key cloth_type mismatch (cached=${preprocessingClothType}, now=${clothTypeVal}) → re-preprocess`);
+      const personUri = basePersonUri ?? capturedPhoto;
+      setPreprocessingCacheKey(null);
+      setPreprocessingClothType(null);
+      if (personUri) {
+        activeCacheKey = await preprocessPersonImage(personUri, clothTypeVal);
+      }
+    }
 
     // Quick connectivity check (GET /health) so APK log shows if device can reach server at all
     try {
@@ -259,17 +308,18 @@ export default function TryOnScreen() {
     }
     try {
       const formData = new FormData();
-      const personField = preprocessingCacheKey ? `cache_key: ${preprocessingCacheKey.slice(0, 12)}...` : 'person_image: (file from camera/gallery)';
-      if (preprocessingCacheKey) {
-        formData.append('cache_key', preprocessingCacheKey);
-        console.log('[TRY-ON] Using cache_key', preprocessingCacheKey.slice(0, 16) + '...');
+      const personField = activeCacheKey ? `cache_key: ${activeCacheKey.slice(0, 12)}...` : 'person_image: (file from camera/gallery)';
+      if (activeCacheKey) {
+        formData.append('cache_key', activeCacheKey);
+        console.log('[TRY-ON] Using cache_key', activeCacheKey.slice(0, 16) + '...');
       } else {
-        formData.append('person_image', { uri: capturedPhoto, type: 'image/jpeg', name: 'person.jpg' } as any);
-        console.log('[TRY-ON] Using person_image uri', capturedPhoto?.slice?.(0, 50) ?? capturedPhoto);
+        const personUri = basePersonUri ?? capturedPhoto;
+        formData.append('person_image', { uri: personUri, type: 'image/jpeg', name: 'person.jpg' } as any);
+        console.log('[TRY-ON] Using person_image uri', personUri?.slice?.(0, 50) ?? personUri);
       }
       formData.append('cloth_type', clothTypeVal);
 
-      const imageModule = effectiveClothImage ?? require('@/assets/clothes/colourfull-sweatshirt.jpg');
+      const imageModule = selectedClothImage ?? require('@/assets/clothes/colourfull-sweatshirt.jpg');
       let clothUri: string;
       // Support URL strings (e.g. Cloudinary) - avoids APK asset/resize issues
       const rawUriFromUrl = typeof imageModule === 'string' && imageModule.startsWith('http') ? imageModule : '';
@@ -407,7 +457,9 @@ export default function TryOnScreen() {
       addLog('8. Success');
       setTryOnError(null);
       setRequestDetails((prev) => (prev ? { ...prev, error: undefined } : null));
-      setResultImage(`data:image/jpeg;base64,${data.imageBase64}`);
+      const imageUri = `data:image/jpeg;base64,${data.imageBase64}`;
+      setResultImage(imageUri);
+      setResultCache((prev) => ({ ...prev, [cacheKeyForResult]: imageUri }));
       setStep('result');
       console.log('[TRY-ON] Success');
     } catch (e: any) {
@@ -460,6 +512,31 @@ export default function TryOnScreen() {
     else router.back();
   };
 
+  const promoteResultToBase = async () => {
+    if (!resultImage) return;
+    try {
+      // resultImage is data URL: data:image/jpeg;base64,...
+      const base64 = resultImage.includes(',') ? resultImage.split(',')[1] : resultImage;
+      const FileSystem = await import('expo-file-system/legacy');
+      const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
+      const fileUri = `${cacheDir}person_base_${Date.now()}.jpg`;
+      await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+      setBasePersonUri(fileUri);
+      setPreprocessingCacheKey(null);
+      setPreprocessingClothType(null);
+      setTryOnError(null);
+      setRequestDetails(null);
+      setRequestLog([]);
+      setResultCache({});
+      // Preprocess the new base immediately so subsequent lower tries are fast
+      preprocessPersonImage(fileUri, 'lower');
+      setStep('preview');
+    } catch (e: unknown) {
+      logError('PROMOTE_RESULT', e);
+      Alert.alert('Error', 'Could not prepare the combo try-on base image.');
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       {step !== 'camera' ? (
@@ -474,11 +551,11 @@ export default function TryOnScreen() {
           <View style={styles.clothPreview}>
             <Image
               source={
-                typeof effectiveClothImage === 'string' && effectiveClothImage.startsWith('http')
-                  ? { uri: effectiveClothImage }
-                  : typeof effectiveClothImage === 'string'
-                    ? { uri: effectiveClothImage }
-                    : (effectiveClothImage ?? require('@/assets/clothes/colourfull-sweatshirt.jpg'))
+                typeof selectedClothImage === 'string' && selectedClothImage.startsWith('http')
+                  ? { uri: selectedClothImage }
+                  : typeof selectedClothImage === 'string'
+                    ? { uri: selectedClothImage }
+                    : (selectedClothImage ?? require('@/assets/clothes/colourfull-sweatshirt.jpg'))
               }
               style={styles.clothPreviewImg}
               contentFit="contain"
@@ -515,7 +592,7 @@ export default function TryOnScreen() {
         </>
       )}
 
-      {step === 'preview' && capturedPhoto && (
+      {step === 'preview' && (basePersonUri || capturedPhoto) && (
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
           {tryOnError ? (
             <View style={styles.errorBox}>
@@ -526,7 +603,7 @@ export default function TryOnScreen() {
             </View>
           ) : null}
           <View style={styles.previewWrap}>
-            <Image source={{ uri: capturedPhoto }} style={styles.previewImg} contentFit="contain" />
+            <Image source={{ uri: basePersonUri ?? capturedPhoto ?? '' }} style={styles.previewImg} contentFit="contain" />
             {(loading || preprocessingLoading) && (
               <View style={styles.loadingOverlay}>
                 <ActivityIndicator size="large" color="#fff" />
@@ -554,8 +631,41 @@ export default function TryOnScreen() {
             <TouchableOpacity style={styles.primaryBtn} onPress={() => { setResultImage(null); setStep('preview'); }}>
               <Text style={styles.primaryBtnText}>Try Another</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryBtn} onPress={promoteResultToBase}>
+              <Text style={styles.secondaryBtnText}>Try lower on this look</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.secondaryBtn} onPress={() => router.back()}>
               <Text style={styles.secondaryBtnText}>Back to Home</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.comboStripWrap}>
+            <Text style={styles.comboStripTitle}>Pick another item</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.comboStrip}>
+              {CLOTHING_ITEMS.map((it) => (
+                <TouchableOpacity
+                  key={it.id}
+                  style={[styles.comboItem, selectedClothId === it.id && styles.comboItemActive]}
+                  onPress={() => {
+                    setSelectedClothId(it.id);
+                    // If base is already preprocessed, rerun quickly
+                    setStep('preview');
+                    setResultImage(null);
+                    setTryOnError(null);
+                    setRequestDetails(null);
+                    setRequestLog([]);
+                  }}
+                >
+                  <Image
+                    source={typeof it.image === 'string' ? { uri: it.image } : it.image}
+                    style={styles.comboItemImg}
+                    contentFit="cover"
+                  />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.primaryBtn} onPress={runTryOn}>
+              <Text style={styles.primaryBtnText}>Apply selected</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -587,6 +697,45 @@ const styles = StyleSheet.create({
   resultActions: { gap: 12 },
   message: { fontSize: 16, color: '#333', marginBottom: 16 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  comboStripWrap: {
+    marginTop: 18,
+  },
+  comboStripTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#000',
+    marginBottom: 10,
+  },
+  comboStrip: {
+    gap: 10,
+    paddingBottom: 14,
+  },
+  comboItem: {
+    width: 74,
+    height: 74,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#f0f0f0',
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  comboItemActive: {
+    borderColor: '#000',
+    borderWidth: 2,
+  },
+  comboItemImg: {
+    width: '100%',
+    height: '100%',
+  },
+  detailsBox: {
+    backgroundColor: '#f5f5f5',
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+  },
+  errorText: { fontSize: 14, color: '#b71c1c', lineHeight: 20 },
   errorBox: {
     backgroundColor: '#fff0f0',
     borderWidth: 1,
@@ -595,7 +744,6 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 16,
   },
-  errorText: { fontSize: 14, color: '#b71c1c', lineHeight: 20 },
   errorDismissBtn: { marginTop: 10, alignSelf: 'flex-start' },
   errorDismissText: { fontSize: 14, color: '#6B4EAA', fontWeight: '500' },
 });

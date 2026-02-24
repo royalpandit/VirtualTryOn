@@ -48,22 +48,38 @@ export default function HomeScreen() {
       try {
         const [session, catRes] = await Promise.all([getSession(), getCategoryList().catch(() => ({ categories: [] }))]);
         if (!mounted) return;
-        const id = session.user?.id ?? null;
+        console.log('[HOME] boot', {
+          hasSession: Boolean(session),
+          hasUser: Boolean(session?.user),
+          userId: session?.user?.id ?? null,
+          hasAccessToken: Boolean(session?.accessToken),
+          catCount: Array.isArray((catRes as any)?.categories) ? (catRes as any).categories.length : null,
+        });
+        const id = session?.user?.id ?? null;
         setSellerId(id);
         const list = Array.isArray(catRes?.categories) ? catRes.categories : [];
-        setCategories(list.filter((c) => c.status !== 0));
+        const safeCategories = list.filter((c): c is OuiCategory => Boolean(c) && typeof (c as any).id !== 'undefined');
+        setCategories(safeCategories.filter((c) => c.status !== 0));
 
         if (!id) {
+          console.log('[HOME] guest mode: no sellerId, using hardcoded items');
           setProducts([]);
           setLoading(false);
           return;
         }
-        const res = await getSellerProducts({ sellerId: id, page: 1, perPage: 50, accessToken: session.accessToken });
+        const res = await getSellerProducts({ sellerId: id, page: 1, perPage: 50, accessToken: session?.accessToken ?? '' });
         if (!mounted) return;
-        setProducts(Array.isArray(res?.products) ? res.products : []);
+        console.log('[HOME] seller mode: fetched products', {
+          sellerId: id,
+          productCount: Array.isArray(res?.products) ? res.products.length : null,
+        });
+        const rawProducts = Array.isArray(res?.products) ? res.products : [];
+        const safeProducts = rawProducts.filter((p): p is OuiSellerProduct => Boolean(p) && typeof (p as any).id !== 'undefined');
+        setProducts(safeProducts);
       } catch (e: unknown) {
         if (!mounted) return;
         const msg = e instanceof Error ? e.message : String(e);
+        console.log('[HOME] boot error', msg);
         Alert.alert('Failed to load products', msg || 'Unable to fetch products');
         setProducts([]);
       } finally {
@@ -75,12 +91,16 @@ export default function HomeScreen() {
 
   const filterChips: FilterChip[] = useMemo(() => {
     const base: FilterChip[] = [{ id: 'all', name: 'All', imageUrl: null }];
-    categories.forEach((c) => base.push({ id: String(c.id), name: c.name, imageUrl: getOuiAssetUrl(c.image) ?? null }));
+    categories
+      .filter((c): c is OuiCategory => Boolean(c) && typeof (c as any).id !== 'undefined')
+      .forEach((c) => base.push({ id: String(c.id), name: c.name, imageUrl: getOuiAssetUrl(c.image) ?? null }));
     return base;
   }, [categories]);
 
   const uiItems: UiClothItem[] = useMemo(() => {
-    return products.map((p) => {
+    return products
+      .filter((p): p is OuiSellerProduct => Boolean(p) && typeof (p as any).id !== 'undefined')
+      .map((p) => {
       const id = String(p.id);
       const price = p.price != null ? `₹${p.price}` : '';
       const imgPath = p.thumb_image ?? p.image;
@@ -102,6 +122,65 @@ export default function HomeScreen() {
     });
   }, [products]);
 
+  const guestItems: UiClothItem[] = useMemo(
+    () => [
+      {
+        id: 'guest-kurti-women',
+        name: 'Kurti (Women)',
+        price: '',
+        cloth_type: 'overall',
+        image: 'https://res.cloudinary.com/dnmyfbmki/image/upload/v1771768714/kurti_women_ytygwx.jpg',
+        categoryName: 'Indian',
+      },
+      {
+        id: 'guest-sherwani',
+        name: 'Sherwani',
+        price: '',
+        cloth_type: 'overall',
+        image: 'https://res.cloudinary.com/dnmyfbmki/image/upload/v1771768713/sherwani_jpgvcq.webp',
+        categoryName: 'Indian',
+      },
+      {
+        id: 'guest-saree',
+        name: 'Saree',
+        price: '',
+        cloth_type: 'overall',
+        image: 'https://res.cloudinary.com/dnmyfbmki/image/upload/v1771840121/saree_rij9l4.webp',
+        categoryName: 'Indian',
+      },
+      {
+        id: 'guest-kurta-men',
+        name: 'Kurta (Men)',
+        price: '',
+        cloth_type: 'overall',
+        image: 'https://res.cloudinary.com/dnmyfbmki/image/upload/v1771839832/kurta_men_lyhzmt.webp',
+        categoryName: 'Indian',
+      },
+      {
+        id: 'guest-full-suit',
+        name: 'Full Suit',
+        price: '',
+        cloth_type: 'overall',
+        image: 'https://res.cloudinary.com/dnmyfbmki/image/upload/v1771769079/full_suit_xe1twn.png',
+        categoryName: 'Indian',
+      },
+    ],
+    []
+  );
+
+  const displayedItems = sellerId ? (uiItems.length > 0 ? uiItems : guestItems) : guestItems;
+
+  useEffect(() => {
+    console.log('[HOME] render state', {
+      loading,
+      sellerId,
+      productsCount: products.length,
+      categoriesCount: categories.length,
+      displayedCount: displayedItems.length,
+      mode: sellerId ? 'seller' : 'guest',
+    });
+  }, [loading, sellerId, products.length, categories.length, displayedItems.length]);
+
   const onClothPress = (item: UiClothItem) => {
     try {
       const clothId = typeof item?.id === 'string' ? item.id : String(item?.id ?? '1');
@@ -119,7 +198,7 @@ export default function HomeScreen() {
     }
   };
 
-  const emptyState = !loading && uiItems.length === 0;
+  const emptyState = !loading && displayedItems.length === 0;
   const showSignInPrompt = emptyState && !sellerId;
 
   return (
@@ -167,7 +246,7 @@ export default function HomeScreen() {
         </ScrollView>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>{sellerId ? 'My products' : 'Products'}</Text>
+          <Text style={styles.sectionTitle}>{sellerId ? 'My products' : 'Indian Collection'}</Text>
         </View>
 
         <View style={styles.grid}>
@@ -192,7 +271,7 @@ export default function HomeScreen() {
                 <Text style={styles.browseBtnText}>Browse categories</Text>
               </TouchableOpacity>
             </View>
-          ) : uiItems.map((item) => (
+          ) : displayedItems.map((item) => (
             <TouchableOpacity
               key={item.id}
               style={styles.card}
