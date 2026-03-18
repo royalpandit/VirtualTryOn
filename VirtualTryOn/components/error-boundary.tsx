@@ -55,7 +55,7 @@ function ErrorFallback({ error, onRetry }: { error: Error | null; onRetry: () =>
     <View style={styles.container}>
       <Text style={styles.title}>Something went wrong</Text>
       <Text style={styles.message}>
-        We're sorry. The app encountered an error. Please try again or go back.
+        We are sorry. The app encountered an error. Please try again or go back.
       </Text>
       {__DEV__ && error && (
         <Text style={styles.errorText} numberOfLines={5}>

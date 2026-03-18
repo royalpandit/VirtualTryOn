@@ -2,15 +2,15 @@ import { loginAdmin, loginSeller } from '@/lib/auth';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    KeyboardAvoidingView,
+    Platform,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -25,6 +25,11 @@ export default function LoginScreen() {
   const [email, setEmail] = useState(DEFAULT_EMAIL);
   const [password, setPassword] = useState(DEFAULT_PASSWORD);
   const [loading, setLoading] = useState(false);
+
+  const handleSkip = () => {
+    if (loading) return;
+    router.replace('/(tabs)');
+  };
 
   const handleSignIn = async () => {
     if (loading) return;
@@ -110,9 +115,13 @@ export default function LoginScreen() {
             {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.signInText}>Sign in</Text>}
           </TouchableOpacity>
 
+          <TouchableOpacity style={styles.skipButton} onPress={handleSkip} activeOpacity={0.8} disabled={loading}>
+            <Text style={[styles.skipText, loading && styles.skipTextDisabled]}>Skip for now</Text>
+          </TouchableOpacity>
+
           <View style={styles.footer}>
-            <Text style={styles.footerText}>Don't have an account? </Text>
-            <TouchableOpacity onPress={() => Alert.alert('Sign up', 'Seller sign up is available on the web portal. Contact your admin for access.')}>
+            <Text style={styles.footerText}>Do not have an account? </Text>
+            <TouchableOpacity onPress={() => Alert.alert('Sign up', 'Seller sign up is available on the web portal. Contact your admin for access.')}> 
               <Text style={styles.signUpLink}>Sign up</Text>
             </TouchableOpacity>
           </View>
@@ -218,14 +227,28 @@ const styles = StyleSheet.create({
   },
   signInText: {
     color: '#fff',
-    fontSize: 17,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  skipButton: {
+    alignSelf: 'center',
+    marginTop: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+  },
+  skipText: {
+    color: '#6B4EAA',
+    fontSize: 15,
     fontWeight: '600',
   },
+  skipTextDisabled: {
+    opacity: 0.6,
+  },
   footer: {
+    marginTop: 20,
     flexDirection: 'row',
-    justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 24,
+    justifyContent: 'center',
   },
   footerText: {
     fontSize: 15,

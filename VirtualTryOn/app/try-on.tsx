@@ -4,22 +4,40 @@
  * Camera permission is only requested when user taps "Capture Photo".
  */
 import { CLOTHING_ITEMS } from '@/constants/clothing';
+import { useKioskCart } from '@/context/KioskCartContext';
+import { getSession } from '@/lib/auth';
+import {
+  kioskGetCartByToken,
+  kioskTryonShare,
+  kioskTryonStart,
+  kioskUploadImage,
+} from '@/lib/kioskApi';
+import { getOuiAssetUrl, getSellerProducts, type OuiSellerProduct } from '@/lib/ouiApi';
+import * as Clipboard from 'expo-clipboard';
+import * as SecureStore from 'expo-secure-store';
+import { Ionicons } from '@expo/vector-icons';
 import { Asset } from 'expo-asset';
 import Constants from 'expo-constants';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Platform,
-    Image as RNImage,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Dimensions,
+  Platform,
+  Image as RNImage,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const STRIP_WIDTH = 110;
+const STRIP_CARD_SIZE = STRIP_WIDTH - 20;
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 const getApiUrl = () => {
@@ -88,6 +106,23 @@ function normalizeParam(value: unknown): string {
   return String(value);
 }
 
+type ClothType = 'upper' | 'lower' | 'overall';
+type UiClothItem = {
+  id: string;
+  name: string;
+  cloth_type: ClothType;
+  image: number | string;
+};
+
+function inferClothTypeFromProduct(p: OuiSellerProduct): ClothType {
+  const t = p.cloth_type?.toLowerCase();
+  if (t === 'upper' || t === 'lower' || t === 'overall') return t;
+  const cat = (p.category as any)?.name?.toLowerCase?.() ?? '';
+  if (cat.includes('dress')) return 'overall';
+  if (cat.includes('pant') || cat.includes('jeans') || cat.includes('lower')) return 'lower';
+  return 'upper';
+}
+
 export default function TryOnScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
@@ -108,14 +143,134 @@ export default function TryOnScreen() {
   const effectiveClothImage = clothImageUrl && clothImageUrl !== '1' ? clothImageUrl : clothingItem?.image;
 
   const [selectedClothId, setSelectedClothId] = useState<string>(clothId);
-  const selectedCloth = CLOTHING_ITEMS.find((i) => i.id === selectedClothId) ?? null;
+  const [availableCloths, setAvailableCloths] = useState<UiClothItem[] | null>(null);
+  const [clothsLoading, setClothsLoading] = useState(false);
+  const [clothTypeFilter, setClothTypeFilter] = useState<ClothType>(effectiveClothType as ClothType);
+  const selectedClothRef = useRef<{ id: string; cloth_type: ClothType; image: number | string; name: string } | null>(null);
+  const lastTryClothTypeRef = useRef<ClothType | null>(null);
+
+  const pendingApplyRef = useRef<{ clothType: ClothType; cloth: UiClothItem | null } | null>(null);
+  const [appliedUpper, setAppliedUpper] = useState<UiClothItem | null>(null);
+  const [appliedLower, setAppliedLower] = useState<UiClothItem | null>(null);
+  const [appliedOverall, setAppliedOverall] = useState<UiClothItem | null>(null);
+
+  const panelAnim = useRef(new Animated.Value(1)).current;
+  const [stripExpanded, setStripExpanded] = useState<boolean>(true);
+  const [comboMode, setComboMode] = useState<boolean>(false);
+  const [stripVisible, setStripVisible] = useState<boolean>(true);
+  const stripTranslateX = useRef(new Animated.Value(0)).current;
+  const [guideVisible, setGuideVisible] = useState<boolean>(true);
+  const guideOpacity = useRef(new Animated.Value(1)).current;
+  const guideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const GUIDE_DURATION_MS = 3000;
+
+  useEffect(() => {
+    if (step === 'camera') return;
+    setGuideVisible(true);
+    guideOpacity.setValue(1);
+    if (guideTimeoutRef.current) clearTimeout(guideTimeoutRef.current);
+    guideTimeoutRef.current = setTimeout(() => {
+      guideTimeoutRef.current = null;
+      Animated.timing(guideOpacity, {
+        toValue: 0,
+        duration: 400,
+        useNativeDriver: true,
+      }).start(() => setGuideVisible(false));
+    }, GUIDE_DURATION_MS);
+    return () => {
+      if (guideTimeoutRef.current) clearTimeout(guideTimeoutRef.current);
+    };
+  }, [step, resultImage]);
+
+  const STRIP_TOTAL_WIDTH = STRIP_WIDTH + 16;
+  const toggleStrip = () => {
+    setStripVisible((v) => {
+      const next = !v;
+      Animated.spring(stripTranslateX, {
+        toValue: next ? 0 : STRIP_TOTAL_WIDTH + 40,
+        useNativeDriver: true,
+        tension: 65,
+        friction: 12,
+      }).start();
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      setClothsLoading(true);
+      try {
+        const session = await getSession();
+        const sellerId = session?.user?.id ?? null;
+        if (!sellerId) {
+          if (mounted) setAvailableCloths(null);
+          return;
+        }
+        const res = await getSellerProducts({ sellerId, page: 1, perPage: 60, accessToken: session?.accessToken ?? '' });
+        if (!mounted) return;
+        const products = Array.isArray(res?.products) ? res.products : [];
+        const mapped: UiClothItem[] = products
+          .filter((p) => Boolean(p) && typeof (p as any).id !== 'undefined')
+          .map((p) => {
+            const id = String((p as any).id);
+            const name = typeof p.name === 'string' && p.name.length > 0 ? p.name : 'Item';
+            const imgPath = (p as any).thumb_image ?? (p as any).image;
+            const image = typeof imgPath === 'string'
+              ? imgPath.startsWith('http')
+                ? imgPath
+                : (getOuiAssetUrl(imgPath) ?? '')
+              : '';
+            return {
+              id,
+              name,
+              cloth_type: inferClothTypeFromProduct(p),
+              image: image || 'https://via.placeholder.com/512x512.png?text=Cloth',
+            };
+          });
+        setAvailableCloths(mapped.length > 0 ? mapped : null);
+      } catch (e: unknown) {
+        if (mounted) setAvailableCloths(null);
+      } finally {
+        if (mounted) setClothsLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  const localFallbackCloths: UiClothItem[] = useMemo(
+    () => CLOTHING_ITEMS.map((i) => ({ id: i.id, name: i.name, cloth_type: i.cloth_type, image: i.image })),
+    []
+  );
+  const baseCloths: UiClothItem[] = availableCloths && availableCloths.length > 0 ? availableCloths : localFallbackCloths;
+  const incomingClothFromParams: UiClothItem | null = useMemo(() => {
+    if (!clothId || clothId === '1' || !effectiveClothImage) return null;
+    const alreadyIn = baseCloths.some((c) => c.id === clothId);
+    if (alreadyIn) return null;
+    return {
+      id: clothId,
+      name: clothNameParam && clothNameParam !== '1' ? clothNameParam : 'Item',
+      cloth_type: effectiveClothType as ClothType,
+      image: effectiveClothImage,
+    };
+  }, [clothId, clothNameParam, effectiveClothImage, effectiveClothType, baseCloths]);
+  const allCloths: UiClothItem[] = useMemo(
+    () => (incomingClothFromParams ? [incomingClothFromParams, ...baseCloths] : baseCloths),
+    [incomingClothFromParams, baseCloths]
+  );
+  const filteredCloths = useMemo(
+    () => allCloths.filter((c) => c.cloth_type === clothTypeFilter),
+    [allCloths, clothTypeFilter]
+  );
+  const selectedCloth = allCloths.find((i) => i.id === selectedClothId) ?? null;
   const selectedClothType = selectedCloth?.cloth_type ?? effectiveClothType;
   const selectedClothImage = selectedCloth?.image ?? effectiveClothImage;
   const displayClothName = clothNameParam && clothNameParam !== '1'
     ? clothNameParam
     : (selectedCloth?.name ?? clothingItem?.name ?? 'Item');
 
-  const [step, setStep] = useState<'choose' | 'camera' | 'upload' | 'preview' | 'result'>('choose');
+  const [step, setStep] = useState<'choose' | 'camera' | 'upload' | 'preview' | 'result'>('camera');
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
   const [resultImage, setResultImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -137,10 +292,34 @@ export default function TryOnScreen() {
   } | null>(null);
   const [requestLog, setRequestLog] = useState<string[]>([]);
   const [resultCache, setResultCache] = useState<Record<string, string>>({});
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [sharing, setSharing] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const { addToCart, cartId, refreshCart, ensureCart } = useKioskCart();
 
   useEffect(() => {
     console.log('[TRY-ON] Screen mounted, API_BASE_URL=', API_BASE_URL, 'TRY_ON_URL=', TRY_ON_URL);
   }, []);
+
+  useEffect(() => {
+    if (!resultImage) return;
+    const pending = pendingApplyRef.current;
+    if (!pending) return;
+    if (pending.clothType === 'upper') setAppliedUpper(pending.cloth);
+    else if (pending.clothType === 'lower') setAppliedLower(pending.cloth);
+    else setAppliedOverall(pending.cloth);
+    pendingApplyRef.current = null;
+  }, [resultImage]);
+
+  useEffect(() => {
+    if (!selectedCloth) return;
+    selectedClothRef.current = {
+      id: selectedCloth.id,
+      cloth_type: selectedCloth.cloth_type,
+      image: selectedCloth.image,
+      name: selectedCloth.name,
+    };
+  }, [selectedCloth?.id]);
 
   useEffect(() => {
     if (!(loading || preprocessingLoading)) return;
@@ -162,6 +341,7 @@ export default function TryOnScreen() {
       });
   }, [step, CameraComponent]);
 
+  const didAutoTryWithIncomingRef = useRef(false);
   const handlePhotoTaken = useCallback(
     (uri: string) => {
       setCapturedPhoto(uri);
@@ -172,9 +352,22 @@ export default function TryOnScreen() {
       setResultCache({});
       setStep('preview');
       preprocessPersonImage(uri, selectedClothType);
+      if (clothId && clothId !== '1' && effectiveClothImage && !didAutoTryWithIncomingRef.current) {
+        didAutoTryWithIncomingRef.current = true;
+      }
     },
-    [selectedClothType]
+    [selectedClothType, clothId, effectiveClothImage]
   );
+
+  useEffect(() => {
+    if (!(capturedPhoto && clothId && clothId !== '1' && effectiveClothImage && didAutoTryWithIncomingRef.current)) return;
+    const t = setTimeout(() => {
+      didAutoTryWithIncomingRef.current = false;
+      pendingApplyRef.current = selectedCloth ? { clothType: selectedClothType, cloth: selectedCloth } : null;
+      runTryOn();
+    }, 900);
+    return () => clearTimeout(t);
+  }, [capturedPhoto, clothId, effectiveClothImage, selectedCloth?.id, selectedClothType]);
 
   const handleCameraBack = useCallback(() => setStep('choose'), []);
 
@@ -208,7 +401,7 @@ export default function TryOnScreen() {
   };
 
   const preprocessPersonImage = async (photoUri: string, clothType: string = 'upper'): Promise<string | null> => {
-    setPreprocessingLoading(true);
+    // Backend /api/preprocess-person does person segmentation and background removal; cache_key speeds up try-on.
     setPreprocessingClothType((clothType === 'upper' || clothType === 'lower' || clothType === 'overall') ? clothType : null);
     const preprocessUrl = `${API_BASE_URL}/api/preprocess-person`;
     console.log('[PREPROCESS] Start', { preprocessUrl, clothType, photoUriLen: photoUri?.length });
@@ -237,30 +430,32 @@ export default function TryOnScreen() {
       }
     } catch (e: unknown) {
       logError('PREPROCESS', e, { preprocessUrl, clothType });
-    } finally {
-      setPreprocessingLoading(false);
     }
 
     return null;
   };
 
   const runTryOn = async () => {
-    if (!(basePersonUri || capturedPhoto) || !selectedClothImage) {
+    const refCloth = selectedClothRef.current;
+    const clothIdForRequest = refCloth?.id ?? selectedClothId;
+    const clothTypeVal = refCloth?.cloth_type ?? selectedClothType;
+    const clothImageForRequest = refCloth?.image ?? selectedClothImage;
+    if (!(basePersonUri || capturedPhoto) || !clothImageForRequest) {
       console.error('[TRY-ON] Abort: missing person photo or cloth image', {
         capturedPhoto: Boolean(capturedPhoto),
         basePersonUri: Boolean(basePersonUri),
-        hasClothImage: Boolean(selectedClothImage),
+        hasClothImage: Boolean(clothImageForRequest),
       });
       return;
     }
-
-    const clothTypeVal = selectedClothType;
     const baseUriForCache = basePersonUri ?? capturedPhoto;
+
+    lastTryClothTypeRef.current = clothTypeVal;
 
     // Serve from cache immediately (fast switching across items)
     const cacheKeyForResult = getResultCacheKey({
       basePersonUri: baseUriForCache,
-      clothId: selectedClothId,
+      clothId: clothIdForRequest,
       clothType: clothTypeVal,
     });
     const cachedImage = resultCache[cacheKeyForResult];
@@ -281,7 +476,7 @@ export default function TryOnScreen() {
       reached: null,
     });
     const addLog = (line: string) => setRequestLog((prev) => [...prev, line]);
-    console.log('[TRY-ON] Start', { TRY_ON_URL, cache_key: preprocessingCacheKey ?? 'none', cloth_type: clothTypeVal });
+    console.log('[TRY-ON] Start', { TRY_ON_URL, cache_key: preprocessingCacheKey ?? 'none', cloth_type: clothTypeVal, cloth_id: clothIdForRequest });
 
     // cache_key is cloth_type specific on the backend; if user switches cloth type, force re-preprocess
     let activeCacheKey: string | null = preprocessingCacheKey;
@@ -319,7 +514,7 @@ export default function TryOnScreen() {
       }
       formData.append('cloth_type', clothTypeVal);
 
-      const imageModule = selectedClothImage ?? require('@/assets/clothes/colourfull-sweatshirt.jpg');
+      const imageModule = clothImageForRequest ?? require('@/assets/clothes/colourfull-sweatshirt.jpg');
       let clothUri: string;
       // Support URL strings (e.g. Cloudinary) - avoids APK asset/resize issues
       const rawUriFromUrl = typeof imageModule === 'string' && imageModule.startsWith('http') ? imageModule : '';
@@ -457,9 +652,12 @@ export default function TryOnScreen() {
       addLog('8. Success');
       setTryOnError(null);
       setRequestDetails((prev) => (prev ? { ...prev, error: undefined } : null));
-      const imageUri = `data:image/jpeg;base64,${data.imageBase64}`;
+      const resultMime = data.imageMimeType || 'image/jpeg';
+      const imageUri = `data:${resultMime};base64,${data.imageBase64}`;
       setResultImage(imageUri);
       setResultCache((prev) => ({ ...prev, [cacheKeyForResult]: imageUri }));
+      setShareUrl(null);
+      setShareError(null);
       setStep('result');
       console.log('[TRY-ON] Success');
     } catch (e: any) {
@@ -521,6 +719,7 @@ export default function TryOnScreen() {
       const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
       const fileUri = `${cacheDir}person_base_${Date.now()}.jpg`;
       await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+      setResultImage(null);
       setBasePersonUri(fileUri);
       setPreprocessingCacheKey(null);
       setPreprocessingClothType(null);
@@ -537,196 +736,1028 @@ export default function TryOnScreen() {
     }
   };
 
-  return (
-    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {step !== 'camera' ? (
-        <TouchableOpacity style={styles.backBtn} onPress={handleBack}>
-          <Text style={styles.backText}>← Back</Text>
-        </TouchableOpacity>
-      ) : null}
+  const canTryOn = Boolean((basePersonUri || capturedPhoto) && selectedClothImage);
+  const showPreviewUri = resultImage || basePersonUri || capturedPhoto;
+  const previewMode: 'empty' | 'person' | 'result' = resultImage ? 'result' : (basePersonUri || capturedPhoto) ? 'person' : 'empty';
 
-      {step === 'choose' && (
-        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-          <Text style={styles.title}>Try on: {displayClothName}</Text>
-          <View style={styles.clothPreview}>
-            <Image
-              source={
-                typeof selectedClothImage === 'string' && selectedClothImage.startsWith('http')
-                  ? { uri: selectedClothImage }
-                  : typeof selectedClothImage === 'string'
-                    ? { uri: selectedClothImage }
-                    : (selectedClothImage ?? require('@/assets/clothes/colourfull-sweatshirt.jpg'))
-              }
-              style={styles.clothPreviewImg}
-              contentFit="contain"
-            />
-          </View>
-          <Text style={styles.hint}>Capture or upload a photo of yourself to try on this item.</Text>
-          <TouchableOpacity style={styles.primaryBtn} onPress={() => setStep('camera')}>
-            <Text style={styles.primaryBtnText}>Capture Photo</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.secondaryBtn} onPress={pickImage}>
-            <Text style={styles.secondaryBtnText}>Upload Photo</Text>
-          </TouchableOpacity>
-        </ScrollView>
-      )}
+  const resetToChoose = () => {
+    setCapturedPhoto(null);
+    setBasePersonUri(null);
+    setResultImage(null);
+    setPreprocessingCacheKey(null);
+    setPreprocessingClothType(null);
+    setTryOnError(null);
+    setRequestDetails(null);
+    setRequestLog([]);
+    setResultCache({});
+    setStep('choose');
+  };
 
-      {step === 'camera' && (
-        <>
+  const animatePanel = () => {
+    panelAnim.setValue(0);
+    Animated.timing(panelAnim, {
+      toValue: 1,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const setCategory = (t: ClothType) => {
+    if (t === clothTypeFilter) return;
+    setClothTypeFilter(t);
+    animatePanel();
+  };
+
+  const handleStripTypePress = (t: ClothType) => {
+    if (t === clothTypeFilter) {
+      setStripExpanded((v) => !v);
+      animatePanel();
+      return;
+    }
+    setStripExpanded(true);
+    setCategory(t);
+  };
+
+  const handleSelectCloth = async (it: UiClothItem) => {
+    if (loading || preprocessingLoading) return;
+    const hasPerson = Boolean(basePersonUri || capturedPhoto);
+    const lastTryType = lastTryClothTypeRef.current;
+    const shouldAutoLayer = Boolean(resultImage) && Boolean(lastTryType) && it.cloth_type !== lastTryType;
+    if (shouldAutoLayer) {
+      await promoteResultToBase();
+    }
+    setClothTypeFilter(it.cloth_type);
+    setSelectedClothId(it.id);
+    selectedClothRef.current = { id: it.id, cloth_type: it.cloth_type, image: it.image, name: it.name };
+    setTryOnError(null);
+    setRequestDetails(null);
+    setRequestLog([]);
+    setStep(hasPerson || resultImage ? 'preview' : 'choose');
+
+    if (hasPerson) {
+      pendingApplyRef.current = { clothType: it.cloth_type, cloth: it };
+      runTryOn();
+    }
+  };
+
+  const handleTryLook = () => {
+    pendingApplyRef.current = { clothType: selectedClothType, cloth: selectedCloth };
+    runTryOn();
+  };
+
+  const canAddToCart = Boolean(selectedCloth && /^\d+$/.test(selectedClothId));
+  const handleAddToCart = async () => {
+    if (!canAddToCart) return;
+    try {
+      await addToCart(Number(selectedClothId), 1);
+      Alert.alert('Added', 'Item added to cart.');
+    } catch (e) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Could not add to cart.');
+    }
+  };
+
+  const canShareLook = Boolean(resultImage && /^\d+$/.test(selectedClothId));
+  const handleShareLook = async () => {
+    if (!resultImage || !/^\d+$/.test(selectedClothId)) return;
+    setSharing(true);
+    setShareError(null);
+    try {
+      await ensureCart();
+      await refreshCart();
+      const token = await SecureStore.getItemAsync('kiosk_cart_qr_token');
+      if (!token) {
+        setShareError('Cart not ready. Try again.');
+        return;
+      }
+      const cartRes = await kioskGetCartByToken(token);
+      const currentCartId = cartRes?.cart?.id;
+      if (currentCartId == null) {
+        setShareError('Cart not ready. Add to cart first or try again.');
+        return;
+      }
+      const FileSystem = await import('expo-file-system/legacy');
+      const base64 = resultImage.includes(',') ? resultImage.split(',')[1] : resultImage;
+      const mime = resultImage.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
+      const ext = mime === 'image/png' ? 'png' : 'jpg';
+      const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
+      const fileUri = `${cacheDir}kiosk_tryon_${Date.now()}.${ext}`;
+      await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+      const uploadRes = await kioskUploadImage('tryon', fileUri, mime);
+      const path = uploadRes?.data?.path ?? uploadRes?.data?.full_url;
+      if (!path) throw new Error('Upload did not return path');
+      const startRes = await kioskTryonStart(currentCartId, Number(selectedClothId), path);
+      const sessionId = startRes?.data?.id;
+      if (sessionId == null) throw new Error('Try-on start did not return session id');
+      const shareRes = await kioskTryonShare(sessionId);
+      const url = shareRes?.share_url;
+      if (url) {
+        setShareUrl(url);
+        await Clipboard.setStringAsync(url);
+        Alert.alert('Shared', 'Share link copied to clipboard. Others can scan or open this link to view your look.');
+      } else {
+        setShareError('No share link returned.');
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setShareError(msg);
+      Alert.alert('Share failed', msg);
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const renderKioskScreen = () => {
+    if (step === 'camera') {
+      return (
+        <View style={styles.cameraFullScreen}>
           {cameraLoadError ? (
-            <View style={styles.centered}>
-              <Text style={styles.message}>{cameraLoadError}</Text>
-              <Text style={styles.hint}>Use "Upload Photo" to choose an image from your gallery.</Text>
-              <TouchableOpacity style={styles.primaryBtn} onPress={() => setStep('choose')}>
-                <Text style={styles.primaryBtnText}>← Back</Text>
+            <View style={styles.centeredOnStage}>
+              <Text style={styles.stageTitle}>Camera unavailable</Text>
+              <Text style={styles.stageSubtitle}>{cameraLoadError}</Text>
+              <TouchableOpacity
+                style={[styles.bigBtn, styles.bigBtnSecondary]}
+                onPress={() => setStep('preview')}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.bigBtnSecondaryText}>Back to preview</Text>
               </TouchableOpacity>
             </View>
           ) : CameraComponent ? (
             <CameraComponent onPhotoTaken={handlePhotoTaken} onBack={handleCameraBack} />
           ) : (
-            <View style={styles.centered}>
-              <ActivityIndicator size="large" color="#6B4EAA" />
-              <Text style={styles.message}>Loading camera...</Text>
+            <View style={styles.centeredOnStage}>
+              <ActivityIndicator size="large" color="#fff" />
+              <Text style={styles.stageSubtitle}>Loading camera…</Text>
             </View>
           )}
-        </>
-      )}
+        </View>
+      );
+    }
 
-      {step === 'preview' && (basePersonUri || capturedPhoto) && (
-        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-          {tryOnError ? (
-            <View style={styles.errorBox}>
-              <Text style={styles.errorText} selectable>{tryOnError}</Text>
-              <TouchableOpacity style={styles.errorDismissBtn} onPress={() => { setTryOnError(null); setRequestDetails(null); setRequestLog([]); }}>
-                <Text style={styles.errorDismissText}>Dismiss</Text>
-              </TouchableOpacity>
+    return (
+      <View style={styles.kioskRoot}>
+        <View style={styles.previewStage}>
+          {showPreviewUri ? (
+            <View style={resultImage ? styles.stageResultWrap : styles.stageImageWrap}>
+              <Image source={{ uri: showPreviewUri }} style={styles.stageImage} contentFit="cover" />
             </View>
+          ) : (
+            <View style={styles.centeredOnStage}>
+              <Text style={styles.stageTitle}>Stand in front of the mirror</Text>
+              <Text style={styles.stageSubtitle}>Capture a photo or upload to start trying looks.</Text>
+            </View>
+          )}
+
+          {guideVisible && (
+            <Animated.View pointerEvents="none" style={[styles.guideOverlay, { opacity: guideOpacity }]}>
+              {!showPreviewUri ? (
+                <Text style={styles.guideOverlayText}>1) Tap Camera or Gallery 2) Take/choose a full-body photo (background will be processed)</Text>
+              ) : resultImage ? (
+                <Text style={styles.guideOverlayText}>
+                  {comboMode ? 'Combo: Select lower and tap to apply, or switch upper/lower from the strip.' : 'Tap Upper/Lower to build a combo. Tap another item to swap it.'}
+                </Text>
+              ) : (
+                <Text style={styles.guideOverlayText}>
+                  {comboMode ? 'Combo: Select upper → Try on. Then select lower → Try on again.' : 'Tap a cloth to apply. Change category in the right strip.'}
+                </Text>
+              )}
+            </Animated.View>
+          )}
+
+        {(loading || preprocessingLoading) && (
+          <View style={styles.stageOverlay}>
+            <ActivityIndicator size="large" color="#fff" />
+            <Text style={styles.stageOverlayText}>{LOADING_MESSAGES[loadingMessageIndex]}</Text>
+          </View>
+        )}
+
+        {tryOnError ? (
+          <View style={styles.stageError}>
+            <Text style={styles.stageErrorText} selectable>
+              {tryOnError}
+            </Text>
+          </View>
+        ) : null}
+
+        </View>
+
+        <View style={styles.topBar}>
+          <TouchableOpacity onPress={handleBack} activeOpacity={0.85} style={styles.backPill}>
+            <Ionicons name="chevron-back" size={20} color="#fff" />
+            <Text style={styles.backPillText}>Back</Text>
+          </TouchableOpacity>
+          {canAddToCart ? (
+            <TouchableOpacity onPress={handleAddToCart} activeOpacity={0.85} style={styles.addToCartPill}>
+              <Ionicons name="cart-outline" size={18} color="#fff" />
+              <Text style={styles.addToCartPillText}>Add to cart</Text>
+            </TouchableOpacity>
           ) : null}
-          <View style={styles.previewWrap}>
-            <Image source={{ uri: basePersonUri ?? capturedPhoto ?? '' }} style={styles.previewImg} contentFit="contain" />
-            {(loading || preprocessingLoading) && (
-              <View style={styles.loadingOverlay}>
-                <ActivityIndicator size="large" color="#fff" />
-                <Text style={styles.loadingMsg}>{LOADING_MESSAGES[loadingMessageIndex]}</Text>
+        </View>
+
+        {resultImage && canShareLook && (
+          <View style={styles.shareBar}>
+            {shareUrl ? (
+              <View style={styles.shareUrlWrap}>
+                <Text style={styles.shareUrlLabel}>Share link (copied)</Text>
+                <Text style={styles.shareUrlText} numberOfLines={1} selectable>{shareUrl}</Text>
+                <TouchableOpacity onPress={() => Clipboard.setStringAsync(shareUrl).then(() => Alert.alert('Copied', 'Link copied again.'))} style={styles.shareCopyBtn} activeOpacity={0.85}>
+                  <Ionicons name="copy-outline" size={18} color="#fff" />
+                  <Text style={styles.shareCopyBtnText}>Copy again</Text>
+                </TouchableOpacity>
               </View>
+            ) : (
+              <>
+                {shareError ? <Text style={styles.shareErrorText}>{shareError}</Text> : null}
+                <TouchableOpacity
+                  onPress={handleShareLook}
+                  disabled={sharing}
+                  style={[styles.shareLookBtn, sharing && styles.shareLookBtnDisabled]}
+                  activeOpacity={0.85}
+                >
+                  {sharing ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      <Ionicons name="share-social-outline" size={20} color="#fff" />
+                      <Text style={styles.shareLookBtnText}>Share your look</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </>
             )}
           </View>
-          <TouchableOpacity
-            style={[styles.primaryBtn, (loading || preprocessingLoading) && styles.primaryBtnDisabled]}
-            onPress={runTryOn}
-            disabled={loading || preprocessingLoading}
-          >
-            <Text style={styles.primaryBtnText}>Try On</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.secondaryBtn} onPress={() => { setCapturedPhoto(null); setPreprocessingCacheKey(null); setStep('choose'); setTryOnError(null); setRequestDetails(null); setRequestLog([]); }} disabled={loading || preprocessingLoading}>
-            <Text style={styles.secondaryBtnText}>Choose different photo</Text>
-          </TouchableOpacity>
-        </ScrollView>
-      )}
+        )}
 
-      {step === 'result' && resultImage && (
-        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-          <Image source={{ uri: resultImage }} style={styles.resultImg} contentFit="contain" />
-          <View style={styles.resultActions}>
-            <TouchableOpacity style={styles.primaryBtn} onPress={() => { setResultImage(null); setStep('preview'); }}>
-              <Text style={styles.primaryBtnText}>Try Another</Text>
+        <TouchableOpacity
+          activeOpacity={0.9}
+          onPress={toggleStrip}
+          style={[styles.stripToggleTab, stripVisible && styles.stripToggleTabWhenOpen]}
+        >
+          <Ionicons name={stripVisible ? 'chevron-forward' : 'chevron-back'} size={20} color="#fff" />
+        </TouchableOpacity>
+
+        <Animated.View style={[styles.rightStrip, { transform: [{ translateX: stripTranslateX }] }]}>
+          <View style={styles.stripChips}>
+            <TouchableOpacity
+              style={[styles.stripChip, clothTypeFilter === 'upper' && styles.stripChipActive]}
+              onPress={() => handleStripTypePress('upper')}
+              activeOpacity={0.9}
+            >
+              <Text numberOfLines={1} style={[styles.stripChipText, clothTypeFilter === 'upper' && styles.stripChipTextActive]}>Upper</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.secondaryBtn} onPress={promoteResultToBase}>
-              <Text style={styles.secondaryBtnText}>Try lower on this look</Text>
+            <TouchableOpacity
+              style={[styles.stripChip, clothTypeFilter === 'lower' && styles.stripChipActive]}
+              onPress={() => handleStripTypePress('lower')}
+              activeOpacity={0.9}
+            >
+              <Text numberOfLines={1} style={[styles.stripChipText, clothTypeFilter === 'lower' && styles.stripChipTextActive]}>Lower</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.secondaryBtn} onPress={() => router.back()}>
-              <Text style={styles.secondaryBtnText}>Back to Home</Text>
+            <TouchableOpacity
+              style={[styles.stripChip, clothTypeFilter === 'overall' && styles.stripChipActive]}
+              onPress={() => handleStripTypePress('overall')}
+              activeOpacity={0.9}
+            >
+              <Text numberOfLines={1} style={[styles.stripChipText, clothTypeFilter === 'overall' && styles.stripChipTextActive]}>Overall</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.stripChip, comboMode && styles.stripChipActive]}
+              onPress={() => { setComboMode((v) => !v); animatePanel(); }}
+              activeOpacity={0.9}
+            >
+              <Text numberOfLines={1} style={[styles.stripChipText, comboMode && styles.stripChipTextActive]}>Combo</Text>
             </TouchableOpacity>
           </View>
 
-          <View style={styles.comboStripWrap}>
-            <Text style={styles.comboStripTitle}>Pick another item</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.comboStrip}>
-              {CLOTHING_ITEMS.map((it) => (
-                <TouchableOpacity
-                  key={it.id}
-                  style={[styles.comboItem, selectedClothId === it.id && styles.comboItemActive]}
-                  onPress={() => {
-                    setSelectedClothId(it.id);
-                    // If base is already preprocessed, rerun quickly
-                    setStep('preview');
-                    setResultImage(null);
-                    setTryOnError(null);
-                    setRequestDetails(null);
-                    setRequestLog([]);
-                  }}
-                >
-                  <Image
-                    source={typeof it.image === 'string' ? { uri: it.image } : it.image}
-                    style={styles.comboItemImg}
-                    contentFit="cover"
-                  />
-                </TouchableOpacity>
-              ))}
+          <Animated.View style={[styles.stripPanel, { opacity: panelAnim, flex: 1 }]}>
+            <ScrollView
+              showsVerticalScrollIndicator={true}
+              contentContainerStyle={styles.stripScrollContent}
+              style={styles.stripScrollView}
+            >
+              {filteredCloths.map((it) => {
+                const isSelected = selectedClothId === it.id;
+                return (
+                  <TouchableOpacity
+                    key={it.id}
+                    style={styles.stripCardWrapper}
+                    onPress={() => handleSelectCloth(it)}
+                    activeOpacity={0.9}
+                  >
+                    <View style={[styles.stripCard, isSelected && styles.stripCardActive]}>
+                      <Image
+                        source={typeof it.image === 'string' ? { uri: it.image } : it.image}
+                        style={styles.stripCardImage}
+                        contentFit="cover"
+                      />
+                      <View style={styles.stripCardOverlay}>
+                        <Text style={styles.stripCardName} numberOfLines={2}>{it.name}</Text>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+              {clothsLoading ? (
+                <View style={styles.trayLoadingPill}>
+                  <ActivityIndicator size="small" color="#fff" />
+                  <Text style={styles.trayLoadingText}>Loading…</Text>
+                </View>
+              ) : null}
             </ScrollView>
-            <TouchableOpacity style={styles.primaryBtn} onPress={runTryOn}>
-              <Text style={styles.primaryBtnText}>Apply selected</Text>
-            </TouchableOpacity>
-          </View>
-        </ScrollView>
-      )}
+          </Animated.View>
+
+          {comboMode && (
+            <View style={styles.comboHint}>
+              <Text style={styles.comboHintText}>Combo: Try upper first, then lower on result</Text>
+            </View>
+          )}
+        </Animated.View>
+      </View>
+    );
+  };
+
+  return (
+    <SafeAreaView style={styles.container} edges={[]}>
+      {renderKioskScreen()}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  backBtn: { padding: 16, paddingTop: 8 },
-  backText: { fontSize: 17, color: '#6B4EAA', fontWeight: '500' },
-  scroll: { flex: 1 },
-  scrollContent: { padding: 20, paddingBottom: 40 },
-  title: { fontSize: 22, fontWeight: '700', color: '#1a1a2e', marginBottom: 16 },
-  clothPreview: { width: '100%', height: 200, backgroundColor: '#f5f5f5', borderRadius: 12, overflow: 'hidden', marginBottom: 20 },
-  clothPreviewImg: { width: '100%', height: '100%' },
+  container: { flex: 1, backgroundColor: '#121212' },
   hint: { fontSize: 15, color: '#666', marginBottom: 24 },
   primaryBtn: { backgroundColor: '#6B4EAA', paddingVertical: 16, borderRadius: 12, alignItems: 'center', marginBottom: 12 },
   primaryBtnDisabled: { opacity: 0.6 },
   primaryBtnText: { color: '#fff', fontSize: 17, fontWeight: '600' },
   secondaryBtn: { paddingVertical: 16, alignItems: 'center', marginBottom: 12, borderWidth: 1, borderColor: '#6B4EAA', borderRadius: 12 },
   secondaryBtnText: { color: '#6B4EAA', fontSize: 17, fontWeight: '500' },
-  previewWrap: { width: '100%', aspectRatio: 3/4, backgroundColor: '#000', borderRadius: 12, overflow: 'hidden', marginBottom: 20 },
-  previewImg: { width: '100%', height: '100%' },
-  loadingOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
-  loadingMsg: { color: '#fff', marginTop: 12, fontSize: 16 },
-  resultImg: { width: '100%', aspectRatio: 3/4, backgroundColor: '#000', borderRadius: 12, marginBottom: 20 },
-  resultActions: { gap: 12 },
-  message: { fontSize: 16, color: '#333', marginBottom: 16 },
-  centered: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  comboStripWrap: {
-    marginTop: 18,
+
+  cameraFullScreen: {
+    flex: 1,
+    backgroundColor: '#121212',
   },
-  comboStripTitle: {
+
+  kioskRoot: {
+    flex: 1,
+    backgroundColor: '#121212',
+  },
+  previewStage: {
+    flex: 1,
+    backgroundColor: '#121212',
+    position: 'relative',
+  },
+  stageImageWrap: {
+    flex: 1,
+    backgroundColor: '#121212',
+  },
+  stageResultWrap: {
+    flex: 1,
+    backgroundColor: '#ffffff',
+  },
+  stageImage: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: 'transparent',
+  },
+  centeredOnStage: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+  },
+  stageTitle: {
+    color: '#fff',
+    fontSize: 28,
+    fontWeight: '800',
+    textAlign: 'center',
+    letterSpacing: 0.2,
+  },
+  stageSubtitle: {
+    color: 'rgba(255,255,255,0.78)',
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 10,
+    lineHeight: 22,
+  },
+  stageOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  guideOverlay: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 170,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.42)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  guideOverlayText: {
+    color: 'rgba(255,255,255,0.92)',
+    fontSize: 13,
+    fontWeight: '800',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  stageOverlayText: {
+    color: '#fff',
+    marginTop: 12,
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  stageError: {
+    position: 'absolute',
+    top: 64,
+    left: 16,
+    right: 16,
+    backgroundColor: 'rgba(183,28,28,0.9)',
+    borderRadius: 14,
+    padding: 12,
+  },
+  stageErrorText: {
+    color: '#fff',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  topBar: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    right: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  addToCartPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: '#6B4EAA',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  addToCartPillText: {
+    color: '#fff',
     fontSize: 14,
     fontWeight: '700',
-    color: '#000',
+  },
+  shareBar: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 16,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  shareUrlWrap: {},
+  shareUrlLabel: { fontSize: 12, color: 'rgba(255,255,255,0.8)', marginBottom: 4 },
+  shareUrlText: { fontSize: 13, color: '#fff', marginBottom: 10 },
+  shareCopyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'flex-start',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#6B4EAA',
+  },
+  shareCopyBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  shareErrorText: { fontSize: 12, color: '#ffcdd2', marginBottom: 8 },
+  shareLookBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 14,
+    backgroundColor: '#6B4EAA',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  shareLookBtnDisabled: { opacity: 0.7 },
+  shareLookBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  leftDock: {
+    position: 'absolute',
+    top: 86,
+    left: 12,
+    width: 110,
+    gap: 10,
+  },
+  dockBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+  },
+  dockBtnPrimary: {
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  dockBtnSecondary: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  dockBtnTextPrimary: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  dockBtnTextSecondary: {
+    color: 'rgba(255,255,255,0.92)',
+    fontSize: 13,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  rightStrip: {
+    position: 'absolute',
+    top: 72,
+    right: 10,
+    bottom: 12,
+    width: STRIP_WIDTH + 16,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    borderRadius: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  stripToggleTab: {
+    position: 'absolute',
+    top: '50%',
+    right: 8,
+    marginTop: -24,
+    width: 32,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stripToggleTabWhenOpen: {
+    right: STRIP_WIDTH + 26,
+  },
+  stripChips: {
+    flexDirection: 'column',
+    gap: 8,
     marginBottom: 10,
   },
-  comboStrip: {
-    gap: 10,
-    paddingBottom: 14,
+  stripPanel: {
+    flex: 1,
+    alignSelf: 'stretch',
+    backgroundColor: 'transparent',
+    borderRadius: 14,
+    overflow: 'hidden',
   },
-  comboItem: {
-    width: 74,
-    height: 74,
+  stripScrollView: {
+    flex: 1,
+  },
+  stripScrollContent: {
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    gap: 10,
+    alignItems: 'center',
+    paddingBottom: 24,
+  },
+  stripCardWrapper: {
+    width: STRIP_CARD_SIZE,
+    alignItems: 'center',
+  },
+  stripCard: {
+    width: STRIP_CARD_SIZE,
+    height: STRIP_CARD_SIZE * 1.05,
     borderRadius: 12,
     overflow: 'hidden',
-    backgroundColor: '#f0f0f0',
-    borderWidth: 1,
-    borderColor: '#ddd',
-  },
-  comboItemActive: {
-    borderColor: '#000',
+    backgroundColor: 'rgba(255,255,255,0.08)',
     borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.14)',
+    position: 'relative',
   },
-  comboItemImg: {
+  stripCardActive: {
+    borderColor: '#6B4EAA',
+    backgroundColor: 'rgba(107,78,170,0.25)',
+  },
+  stripCardImage: {
     width: '100%',
     height: '100%',
   },
+  stripCardOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+  },
+  stripCardName: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  comboHint: {
+    marginTop: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(107,78,170,0.4)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  comboHintText: {
+    color: 'rgba(255,255,255,0.95)',
+    fontSize: 10,
+    fontWeight: '800',
+    textAlign: 'center',
+    lineHeight: 14,
+  },
+  stripMiniList: {
+    alignSelf: 'stretch',
+    backgroundColor: 'transparent',
+    borderRadius: 24,
+    paddingTop: 10,
+    paddingHorizontal: 10,
+    paddingBottom: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  stripChip: {
+    height: 42,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  stripChipActive: {
+    backgroundColor: 'rgba(107,78,170,0.95)',
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  stripChipText: {
+    color: 'rgba(255,255,255,0.90)',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  stripChipTextActive: {
+    color: '#fff',
+  },
+  stripScrollWrap: {
+    flex: 1,
+  },
+  stripItem: {
+    width: 72,
+    alignItems: 'center',
+  },
+  backPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  backPillText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  actionDock: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 16,
+    flexDirection: 'row',
+    gap: 12,
+  },
+  bottomTray: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 12,
+    backgroundColor: 'rgba(0,0,0,0.52)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+    borderRadius: 22,
+    padding: 10,
+  },
+  trayTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  trayChips: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  trayChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  trayChipActive: {
+    backgroundColor: 'rgba(107,78,170,0.95)',
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  trayChipText: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  trayChipTextActive: {
+    color: '#fff',
+  },
+  trayActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  trayActionBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  trayActionBtnPrimary: {
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  trayActionBtnSecondary: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  trayActionTextPrimary: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  trayActionTextSecondary: {
+    color: 'rgba(255,255,255,0.92)',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  trayScrollWrap: {
+    marginTop: 10,
+  },
+  trayScrollContent: {
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    gap: 12,
+    alignItems: 'flex-start',
+  },
+  circleItem: {
+    width: 74,
+    alignItems: 'center',
+  },
+  circleRing: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    padding: 3,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  circleRingActive: {
+    borderColor: '#6B4EAA',
+  },
+  circleImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 30,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  circleLabel: {
+    marginTop: 6,
+    color: 'rgba(255,255,255,0.90)',
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  trayLoadingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  trayLoadingText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  bigBtn: {
+    flex: 1,
+    height: 64,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+  bigBtnPrimary: {
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  bigBtnPrimaryText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  bigBtnSecondary: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  bigBtnSecondaryText: {
+    color: 'rgba(255,255,255,0.90)',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  bigBtnAccent: {
+    backgroundColor: '#6B4EAA',
+    borderColor: '#6B4EAA',
+  },
+  bigBtnAccentText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: 0.2,
+  },
+  bigBtnDisabled: {
+    opacity: 0.6,
+  },
+  rightPanel: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: 340,
+    backgroundColor: 'rgba(10,10,10,0.78)',
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: 'rgba(255,255,255,0.16)',
+    paddingTop: 16,
+  },
+  panelHeader: {
+    paddingHorizontal: 16,
+    paddingBottom: 14,
+  },
+  panelTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '900',
+    letterSpacing: 0.2,
+  },
+  categoryRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  categoryBtn: {
+    flex: 1,
+    height: 42,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  categoryBtnActive: {
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    borderColor: 'rgba(255,255,255,0.92)',
+  },
+  categoryBtnText: {
+    color: 'rgba(255,255,255,0.86)',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  categoryBtnTextActive: {
+    color: '#000',
+  },
+  panelBody: {
+    flex: 1,
+  },
+  panelScrollContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    gap: 12,
+  },
+  productCard: {
+    flexDirection: 'row',
+    gap: 12,
+    padding: 12,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  productCardActive: {
+    borderColor: '#fff',
+    backgroundColor: 'rgba(255,255,255,0.10)',
+  },
+  productImage: {
+    width: 74,
+    height: 74,
+    borderRadius: 14,
+    backgroundColor: '#111',
+  },
+  productMeta: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  productName: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '900',
+    lineHeight: 20,
+  },
+  productTag: {
+    marginTop: 6,
+    color: 'rgba(255,255,255,0.70)',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  panelLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 12,
+  },
+  panelLoadingText: {
+    color: 'rgba(255,255,255,0.80)',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  lookCard: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 18,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255,255,255,0.16)',
+    backgroundColor: 'rgba(0,0,0,0.25)',
+  },
+  lookTitle: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 0.2,
+    marginBottom: 12,
+  },
+  lookRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+  },
+  lookLabel: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  lookValue: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '900',
+    maxWidth: 190,
+    textAlign: 'right',
+  },
+
+  message: { fontSize: 16, color: '#333', marginBottom: 16 },
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   detailsBox: {
     backgroundColor: '#f5f5f5',
     borderWidth: 1,
