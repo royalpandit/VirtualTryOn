@@ -26,7 +26,7 @@ function getItemImageUrl(item: KioskCartItem): string | null {
 
 export default function CartScreen() {
   const router = useRouter();
-  const { items, loading, error, qrToken, invoiceUrl, refreshCart, removeFromCart, addToCart } = useKioskCart();
+  const { items, loading, error, qrToken, invoiceUrl, refreshCart, removeFromCart, addToCart, resetCart } = useKioskCart();
 
   useEffect(() => {
     refreshCart();
@@ -64,6 +64,19 @@ export default function CartScreen() {
           <Text style={styles.backText}>Back</Text>
         </TouchableOpacity>
         <Text style={styles.title}>Cart</Text>
+        <TouchableOpacity
+          onPress={() => {
+            Alert.alert('Start new cart', 'Create a fresh cart for a new user?', [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Create', onPress: () => resetCart() },
+            ]);
+          }}
+          style={styles.refreshBtn}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="refresh" size={18} color="#fff" />
+          <Text style={styles.refreshBtnText}>New</Text>
+        </TouchableOpacity>
       </View>
 
       {error ? (
@@ -176,6 +189,17 @@ const styles = StyleSheet.create({
   backBtn: { flexDirection: 'row', alignItems: 'center', marginRight: 12 },
   backText: { fontSize: 16, fontWeight: '600', color: '#1a1a2e' },
   title: { fontSize: 20, fontWeight: '800', color: '#1a1a2e' },
+  refreshBtn: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#6B4EAA',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  refreshBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
   errorBanner: { backgroundColor: '#fef2f2', padding: 12, marginHorizontal: 16, marginTop: 12, borderRadius: 12 },
   errorText: { color: '#b91c1c', fontSize: 14 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },

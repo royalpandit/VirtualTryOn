@@ -168,7 +168,7 @@ export type OuiBannerItem = {
 export type OuiBannerResponse = {
   status: boolean;
   message?: string;
-  vendor?: { vendor_id?: number; user_id?: number; name?: string; email?: string; average_rating?: string };
+  vendor?: { id?: number; vendor_id?: number; user_id?: number; name?: string; email?: string; average_rating?: string };
   banners: OuiBannerItem[];
 };
 

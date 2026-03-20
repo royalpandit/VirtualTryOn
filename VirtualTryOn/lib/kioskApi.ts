@@ -34,12 +34,14 @@ export type KioskCartGetResponse = {
 };
 
 /** POST /api/kiosk/cart/create */
-export async function kioskCreateCart(vendorId: number): Promise<KioskCartCreateResponse> {
+export async function kioskCreateCart(vendorId: number, timestamp?: number): Promise<KioskCartCreateResponse> {
   const url = `${getBase()}/api/kiosk/cart/create`;
+  const body: { vendor_id: number; timestamp?: number } = { vendor_id: vendorId };
+  if (timestamp != null) body.timestamp = timestamp;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ vendor_id: vendorId }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -92,7 +94,35 @@ export async function kioskGetCartByToken(token: string): Promise<KioskCartGetRe
   const data = (json && typeof json === 'object' && 'data' in json) ? (json as any).data : json;
   const cart = data?.cart ?? json?.cart;
   const itemsRaw = data?.items ?? json?.items ?? [];
-  const items: KioskCartItem[] = Array.isArray(itemsRaw) ? itemsRaw : [];
+  const itemsList: KioskCartItem[] = Array.isArray(itemsRaw) ? itemsRaw : [];
+  // Some APIs can return same product in multiple rows; merge by product_id so quantity increases in one line.
+  const mergedMap = new Map<number, KioskCartItem>();
+  for (const row of itemsList) {
+    const pid = Number((row as any)?.product_id ?? 0);
+    if (!pid) continue;
+    const qty = Number((row as any)?.quantity ?? 1) || 1;
+    const price = Number((row as any)?.price ?? 0) || 0;
+    const total = Number((row as any)?.total ?? price * qty) || price * qty;
+    const existing = mergedMap.get(pid);
+    if (!existing) {
+      mergedMap.set(pid, {
+        ...row,
+        product_id: pid,
+        quantity: qty,
+        price,
+        total,
+      });
+    } else {
+      const mergedQty = Number(existing.quantity ?? 0) + qty;
+      const mergedTotal = Number(existing.total ?? 0) + total;
+      mergedMap.set(pid, {
+        ...existing,
+        quantity: mergedQty,
+        total: mergedTotal > 0 ? mergedTotal : (Number(existing.price ?? price) || 0) * mergedQty,
+      });
+    }
+  }
+  const items = Array.from(mergedMap.values());
   const invoiceUrl = data?.invoice_url ?? json?.invoice_url ?? null;
   return { cart, items, invoice_url: invoiceUrl };
 }

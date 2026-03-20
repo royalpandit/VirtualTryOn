@@ -29,6 +29,7 @@ type KioskCartContextValue = CartState & {
   removeFromCart: (productId: number, quantity?: number) => Promise<void>;
   refreshCart: () => Promise<void>;
   ensureCart: () => Promise<string | null>;
+  resetCart: () => Promise<void>;
 };
 
 const defaultState: CartState = {
@@ -58,6 +59,13 @@ async function setStoredCart(cartUuid: string, qrToken: string) {
   await Promise.all([
     SecureStore.setItemAsync(CART_UUID_KEY, cartUuid),
     SecureStore.setItemAsync(CART_QR_KEY, qrToken),
+  ]);
+}
+
+async function clearStoredCart() {
+  await Promise.all([
+    SecureStore.deleteItemAsync(CART_UUID_KEY),
+    SecureStore.deleteItemAsync(CART_QR_KEY),
   ]);
 }
 
@@ -145,6 +153,32 @@ export function KioskCartProvider({ children }: { children: React.ReactNode }) {
     [state.cartUuid, refreshCart]
   );
 
+  const resetCart = useCallback(async () => {
+    setState((s) => ({ ...s, loading: true, error: null }));
+    try {
+      const session = await getSession();
+      const vendorId = session?.user?.id ?? getDefaultVendorId();
+      // Timestamp nonce helps backend issue a fresh cart UUID for a new kiosk user.
+      const res = await kioskCreateCart(vendorId, Date.now());
+      const { id: cartId, cart_uuid, qr_token } = res.data;
+      await clearStoredCart();
+      await setStoredCart(cart_uuid, qr_token);
+      setState((s) => ({
+        ...s,
+        cartUuid: cart_uuid,
+        qrToken: qr_token,
+        cartId,
+        items: [],
+        invoiceUrl: `https://oui.corescent.in/kiosk/invoice/${encodeURIComponent(qr_token)}`,
+        loading: false,
+      }));
+      await refreshCart();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setState((s) => ({ ...s, loading: false, error: msg }));
+    }
+  }, [refreshCart]);
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -179,8 +213,9 @@ export function KioskCartProvider({ children }: { children: React.ReactNode }) {
       removeFromCart,
       refreshCart,
       ensureCart,
+      resetCart,
     }),
-    [state, itemCount, addToCart, removeFromCart, refreshCart, ensureCart]
+    [state, itemCount, addToCart, removeFromCart, refreshCart, ensureCart, resetCart]
   );
 
   return <KioskCartContext.Provider value={value}>{children}</KioskCartContext.Provider>;

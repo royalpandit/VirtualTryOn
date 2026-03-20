@@ -13,12 +13,12 @@ import {
   kioskUploadImage,
 } from '@/lib/kioskApi';
 import { getOuiAssetUrl, getSellerProducts, type OuiSellerProduct } from '@/lib/ouiApi';
-import * as Clipboard from 'expo-clipboard';
 import * as SecureStore from 'expo-secure-store';
 import { Ionicons } from '@expo/vector-icons';
 import { Asset } from 'expo-asset';
 import Constants from 'expo-constants';
 import { Image } from 'expo-image';
+import QRCode from 'react-native-qrcode-svg';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -38,7 +38,7 @@ import {
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const STRIP_WIDTH = 110;
 const STRIP_CARD_SIZE = STRIP_WIDTH - 20;
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const getApiUrl = () => {
   const envApiUrl = Constants.expoConfig?.extra?.API_URL;
@@ -112,6 +112,8 @@ type UiClothItem = {
   name: string;
   cloth_type: ClothType;
   image: number | string;
+  categoryId?: number;
+  categoryName?: string;
 };
 
 function inferClothTypeFromProduct(p: OuiSellerProduct): ClothType {
@@ -124,6 +126,7 @@ function inferClothTypeFromProduct(p: OuiSellerProduct): ClothType {
 }
 
 export default function TryOnScreen() {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const params = useLocalSearchParams<{
     clothId?: string | string[];
@@ -145,7 +148,7 @@ export default function TryOnScreen() {
   const [selectedClothId, setSelectedClothId] = useState<string>(clothId);
   const [availableCloths, setAvailableCloths] = useState<UiClothItem[] | null>(null);
   const [clothsLoading, setClothsLoading] = useState(false);
-  const [clothTypeFilter, setClothTypeFilter] = useState<ClothType>(effectiveClothType as ClothType);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
   const selectedClothRef = useRef<{ id: string; cloth_type: ClothType; image: number | string; name: string } | null>(null);
   const lastTryClothTypeRef = useRef<ClothType | null>(null);
 
@@ -227,6 +230,8 @@ export default function TryOnScreen() {
               name,
               cloth_type: inferClothTypeFromProduct(p),
               image: image || 'https://via.placeholder.com/512x512.png?text=Cloth',
+              categoryId: p.category?.id as number | undefined,
+              categoryName: p.category?.name,
             };
           });
         setAvailableCloths(mapped.length > 0 ? mapped : null);
@@ -240,7 +245,7 @@ export default function TryOnScreen() {
   }, []);
 
   const localFallbackCloths: UiClothItem[] = useMemo(
-    () => CLOTHING_ITEMS.map((i) => ({ id: i.id, name: i.name, cloth_type: i.cloth_type, image: i.image })),
+    () => CLOTHING_ITEMS.map((i) => ({ id: i.id, name: i.name, cloth_type: i.cloth_type, image: i.image, categoryName: 'All' })),
     []
   );
   const baseCloths: UiClothItem[] = availableCloths && availableCloths.length > 0 ? availableCloths : localFallbackCloths;
@@ -253,19 +258,34 @@ export default function TryOnScreen() {
       name: clothNameParam && clothNameParam !== '1' ? clothNameParam : 'Item',
       cloth_type: effectiveClothType as ClothType,
       image: effectiveClothImage,
+      categoryName: 'Selected',
     };
   }, [clothId, clothNameParam, effectiveClothImage, effectiveClothType, baseCloths]);
   const allCloths: UiClothItem[] = useMemo(
     () => (incomingClothFromParams ? [incomingClothFromParams, ...baseCloths] : baseCloths),
     [incomingClothFromParams, baseCloths]
   );
-  const filteredCloths = useMemo(
-    () => allCloths.filter((c) => c.cloth_type === clothTypeFilter),
-    [allCloths, clothTypeFilter]
-  );
+  const stripCategories = useMemo(() => {
+    const map = new Map<string, { id: string; name: string }>();
+    allCloths.forEach((c) => {
+      if (c.categoryId != null) {
+        const id = String(c.categoryId);
+        if (!map.has(id)) map.set(id, { id, name: c.categoryName || `Category ${id}` });
+      }
+    });
+    return [{ id: 'all', name: 'All' }, ...Array.from(map.values())];
+  }, [allCloths]);
+  const filteredCloths = useMemo(() => {
+    if (selectedCategoryId === 'all') return allCloths;
+    return allCloths.filter((c) => String(c.categoryId ?? '') === selectedCategoryId);
+  }, [allCloths, selectedCategoryId]);
   const selectedCloth = allCloths.find((i) => i.id === selectedClothId) ?? null;
   const selectedClothType = selectedCloth?.cloth_type ?? effectiveClothType;
   const selectedClothImage = selectedCloth?.image ?? effectiveClothImage;
+  useEffect(() => {
+    if (!selectedCloth?.categoryId) return;
+    setSelectedCategoryId(String(selectedCloth.categoryId));
+  }, [selectedCloth?.id]);
   const displayClothName = clothNameParam && clothNameParam !== '1'
     ? clothNameParam
     : (selectedCloth?.name ?? clothingItem?.name ?? 'Item');
@@ -341,7 +361,24 @@ export default function TryOnScreen() {
       });
   }, [step, CameraComponent]);
 
-  const didAutoTryWithIncomingRef = useRef(false);
+  const [autoTryRequestedUri, setAutoTryRequestedUri] = useState<string | null>(null);
+  const [autoTryPending, setAutoTryPending] = useState(false);
+  // Keep selected cloth in sync with route params when user opens Try-On from Home repeatedly.
+  useEffect(() => {
+    if (!clothId || clothId === '1') return;
+    setSelectedClothId(clothId);
+    setAutoTryPending(false);
+    setAutoTryRequestedUri(null);
+    if (effectiveClothImage) {
+      selectedClothRef.current = {
+        id: clothId,
+        cloth_type: effectiveClothType as ClothType,
+        image: effectiveClothImage,
+        name: clothNameParam && clothNameParam !== '1' ? clothNameParam : 'Item',
+      };
+    }
+  }, [clothId, clothNameParam, effectiveClothType, effectiveClothImage]);
+
   const handlePhotoTaken = useCallback(
     (uri: string) => {
       setCapturedPhoto(uri);
@@ -352,22 +389,13 @@ export default function TryOnScreen() {
       setResultCache({});
       setStep('preview');
       preprocessPersonImage(uri, selectedClothType);
-      if (clothId && clothId !== '1' && effectiveClothImage && !didAutoTryWithIncomingRef.current) {
-        didAutoTryWithIncomingRef.current = true;
+      if (clothId && clothId !== '1' && effectiveClothImage) {
+        setAutoTryRequestedUri(uri);
+        setAutoTryPending(true);
       }
     },
     [selectedClothType, clothId, effectiveClothImage]
   );
-
-  useEffect(() => {
-    if (!(capturedPhoto && clothId && clothId !== '1' && effectiveClothImage && didAutoTryWithIncomingRef.current)) return;
-    const t = setTimeout(() => {
-      didAutoTryWithIncomingRef.current = false;
-      pendingApplyRef.current = selectedCloth ? { clothType: selectedClothType, cloth: selectedCloth } : null;
-      runTryOn();
-    }, 900);
-    return () => clearTimeout(t);
-  }, [capturedPhoto, clothId, effectiveClothImage, selectedCloth?.id, selectedClothType]);
 
   const handleCameraBack = useCallback(() => setStep('choose'), []);
 
@@ -393,6 +421,10 @@ export default function TryOnScreen() {
         setResultCache({});
         setStep('preview');
         preprocessPersonImage(result.assets[0].uri, selectedClothType);
+        if (clothId && clothId !== '1' && effectiveClothImage) {
+          setAutoTryRequestedUri(result.assets[0].uri);
+          setAutoTryPending(true);
+        }
       }
     } catch (e: unknown) {
       logError('PICK_IMAGE', e);
@@ -402,6 +434,7 @@ export default function TryOnScreen() {
 
   const preprocessPersonImage = async (photoUri: string, clothType: string = 'upper'): Promise<string | null> => {
     // Backend /api/preprocess-person does person segmentation and background removal; cache_key speeds up try-on.
+    setPreprocessingLoading(true);
     setPreprocessingClothType((clothType === 'upper' || clothType === 'lower' || clothType === 'overall') ? clothType : null);
     const preprocessUrl = `${API_BASE_URL}/api/preprocess-person`;
     console.log('[PREPROCESS] Start', { preprocessUrl, clothType, photoUriLen: photoUri?.length });
@@ -430,6 +463,8 @@ export default function TryOnScreen() {
       }
     } catch (e: unknown) {
       logError('PREPROCESS', e, { preprocessUrl, clothType });
+    } finally {
+      setPreprocessingLoading(false);
     }
 
     return null;
@@ -704,6 +739,28 @@ export default function TryOnScreen() {
     }
   };
 
+  // Deterministic auto-try flow for cloth selected from Home:
+  // wait until photo state is set and preprocess is done, then run once.
+  useEffect(() => {
+    if (!autoTryPending || !autoTryRequestedUri) return;
+    if (!clothId || clothId === '1' || !effectiveClothImage) return;
+    if (loading || preprocessingLoading) return;
+    const currentPhotoUri = basePersonUri ?? capturedPhoto;
+    if (!currentPhotoUri || currentPhotoUri !== autoTryRequestedUri) return;
+
+    setAutoTryPending(false);
+    setAutoTryRequestedUri(null);
+    const refCloth = selectedClothRef.current;
+    if (refCloth) {
+      pendingApplyRef.current = {
+        clothType: refCloth.cloth_type,
+        cloth: { id: refCloth.id, name: refCloth.name, cloth_type: refCloth.cloth_type, image: refCloth.image },
+      };
+    }
+    if (__DEV__) console.log('[AUTO-TRY] Triggering runTryOn for incoming cloth', { clothId, clothType: refCloth?.cloth_type ?? selectedClothType, currentPhotoUriLen: currentPhotoUri?.length });
+    runTryOn();
+  }, [autoTryPending, autoTryRequestedUri, capturedPhoto, basePersonUri, loading, preprocessingLoading, clothId, effectiveClothImage, selectedClothType]);
+
   const handleBack = () => {
     if (step === 'camera') setStep('choose');
     else if (step === 'preview') { setCapturedPhoto(null); setStep('choose'); }
@@ -762,22 +819,6 @@ export default function TryOnScreen() {
     }).start();
   };
 
-  const setCategory = (t: ClothType) => {
-    if (t === clothTypeFilter) return;
-    setClothTypeFilter(t);
-    animatePanel();
-  };
-
-  const handleStripTypePress = (t: ClothType) => {
-    if (t === clothTypeFilter) {
-      setStripExpanded((v) => !v);
-      animatePanel();
-      return;
-    }
-    setStripExpanded(true);
-    setCategory(t);
-  };
-
   const handleSelectCloth = async (it: UiClothItem) => {
     if (loading || preprocessingLoading) return;
     const hasPerson = Boolean(basePersonUri || capturedPhoto);
@@ -786,7 +827,6 @@ export default function TryOnScreen() {
     if (shouldAutoLayer) {
       await promoteResultToBase();
     }
-    setClothTypeFilter(it.cloth_type);
     setSelectedClothId(it.id);
     selectedClothRef.current = { id: it.id, cloth_type: it.cloth_type, image: it.image, name: it.name };
     setTryOnError(null);
@@ -842,7 +882,8 @@ export default function TryOnScreen() {
       const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
       const fileUri = `${cacheDir}kiosk_tryon_${Date.now()}.${ext}`;
       await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
-      const uploadRes = await kioskUploadImage('tryon', fileUri, mime);
+      // API contract: folder must be "tryon_images"
+      const uploadRes = await kioskUploadImage('tryon_images', fileUri, mime);
       const path = uploadRes?.data?.path ?? uploadRes?.data?.full_url;
       if (!path) throw new Error('Upload did not return path');
       const startRes = await kioskTryonStart(currentCartId, Number(selectedClothId), path);
@@ -852,8 +893,7 @@ export default function TryOnScreen() {
       const url = shareRes?.share_url;
       if (url) {
         setShareUrl(url);
-        await Clipboard.setStringAsync(url);
-        Alert.alert('Shared', 'Share link copied to clipboard. Others can scan or open this link to view your look.');
+        Alert.alert('Ready', 'QR is generated. User can scan this to view try-on result on phone.');
       } else {
         setShareError('No share link returned.');
       }
@@ -941,7 +981,7 @@ export default function TryOnScreen() {
 
         </View>
 
-        <View style={styles.topBar}>
+        <View style={[styles.topBar, { top: Math.max(12, insets.top + 6) }]}>
           <TouchableOpacity onPress={handleBack} activeOpacity={0.85} style={styles.backPill}>
             <Ionicons name="chevron-back" size={20} color="#fff" />
             <Text style={styles.backPillText}>Back</Text>
@@ -957,13 +997,11 @@ export default function TryOnScreen() {
         {resultImage && canShareLook && (
           <View style={styles.shareBar}>
             {shareUrl ? (
-              <View style={styles.shareUrlWrap}>
-                <Text style={styles.shareUrlLabel}>Share link (copied)</Text>
-                <Text style={styles.shareUrlText} numberOfLines={1} selectable>{shareUrl}</Text>
-                <TouchableOpacity onPress={() => Clipboard.setStringAsync(shareUrl).then(() => Alert.alert('Copied', 'Link copied again.'))} style={styles.shareCopyBtn} activeOpacity={0.85}>
-                  <Ionicons name="copy-outline" size={18} color="#fff" />
-                  <Text style={styles.shareCopyBtnText}>Copy again</Text>
-                </TouchableOpacity>
+              <View style={styles.shareQrWrap}>
+                <Text style={styles.shareQrLabel}>Scan to view this try-on look</Text>
+                <View style={styles.shareQrCard}>
+                  <QRCode value={shareUrl} size={180} />
+                </View>
               </View>
             ) : (
               <>
@@ -996,29 +1034,18 @@ export default function TryOnScreen() {
           <Ionicons name={stripVisible ? 'chevron-forward' : 'chevron-back'} size={20} color="#fff" />
         </TouchableOpacity>
 
-        <Animated.View style={[styles.rightStrip, { transform: [{ translateX: stripTranslateX }] }]}>
+        <Animated.View style={[styles.rightStrip, { top: Math.max(72, insets.top + 56), transform: [{ translateX: stripTranslateX }] }]}>
           <View style={styles.stripChips}>
-            <TouchableOpacity
-              style={[styles.stripChip, clothTypeFilter === 'upper' && styles.stripChipActive]}
-              onPress={() => handleStripTypePress('upper')}
-              activeOpacity={0.9}
-            >
-              <Text numberOfLines={1} style={[styles.stripChipText, clothTypeFilter === 'upper' && styles.stripChipTextActive]}>Upper</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.stripChip, clothTypeFilter === 'lower' && styles.stripChipActive]}
-              onPress={() => handleStripTypePress('lower')}
-              activeOpacity={0.9}
-            >
-              <Text numberOfLines={1} style={[styles.stripChipText, clothTypeFilter === 'lower' && styles.stripChipTextActive]}>Lower</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.stripChip, clothTypeFilter === 'overall' && styles.stripChipActive]}
-              onPress={() => handleStripTypePress('overall')}
-              activeOpacity={0.9}
-            >
-              <Text numberOfLines={1} style={[styles.stripChipText, clothTypeFilter === 'overall' && styles.stripChipTextActive]}>Overall</Text>
-            </TouchableOpacity>
+            {stripCategories.map((cat) => (
+              <TouchableOpacity
+                key={cat.id}
+                style={[styles.stripChip, selectedCategoryId === cat.id && styles.stripChipActive]}
+                onPress={() => { setSelectedCategoryId(cat.id); setStripExpanded(true); animatePanel(); }}
+                activeOpacity={0.9}
+              >
+                <Text numberOfLines={1} style={[styles.stripChipText, selectedCategoryId === cat.id && styles.stripChipTextActive]}>{cat.name}</Text>
+              </TouchableOpacity>
+            ))}
             <TouchableOpacity
               style={[styles.stripChip, comboMode && styles.stripChipActive]}
               onPress={() => { setComboMode((v) => !v); animatePanel(); }}
@@ -1076,7 +1103,7 @@ export default function TryOnScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={[]}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       {renderKioskScreen()}
     </SafeAreaView>
   );
@@ -1222,20 +1249,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.2)',
   },
-  shareUrlWrap: {},
-  shareUrlLabel: { fontSize: 12, color: 'rgba(255,255,255,0.8)', marginBottom: 4 },
-  shareUrlText: { fontSize: 13, color: '#fff', marginBottom: 10 },
-  shareCopyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    alignSelf: 'flex-start',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: '#6B4EAA',
+  shareQrWrap: { alignItems: 'center' },
+  shareQrLabel: { fontSize: 12, color: 'rgba(255,255,255,0.9)', marginBottom: 10, fontWeight: '700' },
+  shareQrCard: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)',
   },
-  shareCopyBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   shareErrorText: { fontSize: 12, color: '#ffcdd2', marginBottom: 8 },
   shareLookBtn: {
     flexDirection: 'row',

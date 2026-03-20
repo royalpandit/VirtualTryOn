@@ -1,9 +1,11 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { PlayfairDisplay_400Regular, useFonts } from '@expo-google-fonts/playfair-display';
 import { SplashScreen, Stack } from 'expo-router';
 import * as NativeSplash from 'expo-splash-screen';
+import { Image } from 'expo-image';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect } from 'react';
-import { InteractionManager, Platform, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { InteractionManager, Platform, StyleSheet, Text, View } from 'react-native';
 import 'react-native-reanimated';
 
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -25,6 +27,10 @@ function hideSplash() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+  const [fontsLoaded] = useFonts({
+    PlayfairDisplay_400Regular,
+  });
+  const [showBrandSplash, setShowBrandSplash] = useState(true);
 
   // Hide splash as early as possible (sync on first render) — critical for standalone APK
   hideSplash();
@@ -46,6 +52,11 @@ export default function RootLayout() {
     }
   }, []);
 
+  useEffect(() => {
+    const t = setTimeout(() => setShowBrandSplash(false), 2200);
+    return () => clearTimeout(t);
+  }, []);
+
   return (
     <ErrorBoundary>
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
@@ -61,9 +72,51 @@ export default function RootLayout() {
           <View pointerEvents="box-none" style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0 }}>
             <FloatingCartIcon />
           </View>
+          {showBrandSplash ? (
+            <View style={styles.splashOverlay}>
+              <Image source={require('@/assets/images/splash.png')} style={styles.splashImage} contentFit="cover" />
+              <View style={styles.splashTint} />
+              <View style={styles.splashTextWrap}>
+                <Text style={[styles.splashBrand, fontsLoaded && styles.splashBrandPlayfair]}>OUI - KIOSK</Text>
+              </View>
+            </View>
+          ) : null}
         </KioskCartProvider>
         <StatusBar style="auto" />
       </ThemeProvider>
     </ErrorBoundary>
   );
 }
+
+const styles = StyleSheet.create({
+  splashOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 9999,
+    backgroundColor: '#0f0f10',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  splashImage: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  splashTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.18)',
+  },
+  splashTextWrap: {
+    position: 'absolute',
+    top: '14%',
+    width: '100%',
+    alignItems: 'center',
+  },
+  splashBrand: {
+    color: '#F5F5F5',
+    fontSize: 34,
+    fontWeight: '400',
+    letterSpacing: 5.5,
+    textTransform: 'uppercase',
+  },
+  splashBrandPlayfair: {
+    fontFamily: 'PlayfairDisplay_400Regular',
+  },
+});
