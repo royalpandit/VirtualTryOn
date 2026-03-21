@@ -82,6 +82,25 @@ function formatErrorForAlert(e: unknown): string {
   return String(e);
 }
 
+function toUserSafeTryOnError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e ?? '');
+  const msg = raw.toLowerCase();
+
+  if (msg.includes('cannot identify image file') || msg.includes('invalid response: no image')) {
+    return 'We could not process this clothing image. Please try another item or try again in a few seconds.';
+  }
+  if (msg.includes('network request failed') || msg.includes('failed to fetch')) {
+    return 'Connection issue while generating try-on. Please check internet and try again.';
+  }
+  if (msg.includes('timeout') || msg.includes('aborterror')) {
+    return 'Try-on is taking too long right now. Please try again.';
+  }
+  if (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('504') || msg.includes('internal server error')) {
+    return 'Try-on service is temporarily unavailable. Please try again shortly.';
+  }
+  return 'Could not generate try-on right now. Please try again.';
+}
+
 function getResultCacheKey(args: {
   basePersonUri?: string | null;
   clothId: string;
@@ -636,10 +655,28 @@ export default function TryOnScreen() {
         console.warn('[TRY-ON] Cloth resize failed, using original', resizeErr);
         addLog(`4.5 Cloth resize error: ${errMsg.slice(0, 50)} (using original)`);
       }
-      const clothName = `cloth.${uploadClothUri.split('.').pop()?.split('?')[0] || 'jpg'}`;
-      formData.append('cloth_image', { uri: uploadClothUri, type: mime, name: clothName } as any);
-      const clothUriType = uploadClothUri.startsWith('file://') ? 'file' : uploadClothUri.startsWith('http') ? 'http' : 'other';
-      addLog(`5. FormData ready (cloth: ${clothUriType}, ${mime})`);
+      // Ensure multipart gets a readable local file URI (PIL backend rejects invalid bytes otherwise).
+      const FileSystem = await import('expo-file-system/legacy');
+      let safeUploadUri = uploadClothUri.split('?')[0].split('#')[0];
+      if (safeUploadUri.startsWith('content://')) {
+        const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
+        const copiedPath = `${cacheDir}cloth_upload_${Date.now()}.jpg`;
+        await FileSystem.copyAsync({ from: safeUploadUri, to: copiedPath });
+        safeUploadUri = copiedPath;
+        mime = 'image/jpeg';
+        addLog('4.6 cloth content:// copied to file:// for upload');
+      }
+      if (safeUploadUri.startsWith('file:/') && !safeUploadUri.startsWith('file://')) {
+        safeUploadUri = safeUploadUri.replace(/^file:\/*/, 'file://');
+      }
+      const fileInfo = await FileSystem.getInfoAsync(safeUploadUri);
+      if (!(fileInfo as any)?.exists || ((fileInfo as any)?.size ?? 0) < 32) {
+        throw new Error(`Cloth image invalid for upload (exists=${(fileInfo as any)?.exists}, size=${(fileInfo as any)?.size ?? 0})`);
+      }
+      const clothName = 'cloth.jpg';
+      formData.append('cloth_image', { uri: safeUploadUri, type: mime || 'image/jpeg', name: clothName } as any);
+      const clothUriType = safeUploadUri.startsWith('file://') ? 'file' : safeUploadUri.startsWith('http') ? 'http' : 'other';
+      addLog(`5. FormData ready (cloth: ${clothUriType}, ${mime}, size=${(fileInfo as any)?.size ?? 0})`);
       setRequestDetails((prev) => (prev ? {
         ...prev,
         sending: [
@@ -648,7 +685,7 @@ export default function TryOnScreen() {
           `cloth_image: (${clothUriType}) ${mime}, name=${clothName}`,
         ].join('\n'),
       } : null));
-      console.log('[TRY-ON] FormData ready, cloth last, uri=', clothUri.startsWith('file://') ? 'file://...' : clothUri.slice(0, 50), 'mime', mime);
+      console.log('[TRY-ON] FormData ready, cloth last, uri=', safeUploadUri.startsWith('file://') ? 'file://...' : safeUploadUri.slice(0, 50), 'mime', mime);
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), TRY_ON_TIMEOUT_MS);
@@ -706,34 +743,11 @@ export default function TryOnScreen() {
       setRequestDetails((prev) => (prev ? {
         ...prev,
         reached: prev.reached ?? false,
-        error: e?.message ?? String(e),
+        error: toUserSafeTryOnError(e),
       } : null));
-      const isAbort = e?.name === 'AbortError';
-      const shortMsg = isAbort
-        ? 'Try-on timed out. Check your connection and try again.'
-        : formatErrorForAlert(e);
-      const isNetworkFailed = (e?.message ?? '').toLowerCase().includes('network request failed');
-      const isRunPod = API_BASE_URL?.includes('runpod.net') ?? false;
-      const devHint = __DEV__ && isNetworkFailed
-        ? 'Dev: Start the backend (e.g. in CatVTON: python app_fastapi.py). It must listen on 0.0.0.0:8000. On a physical device, use same Wi‑Fi as PC; allow port 8000 in Windows Firewall if needed.'
-        : !__DEV__ && (API_BASE_URL?.includes('localhost') || API_BASE_URL?.includes('10.0.2.2'))
-          ? 'Hint: APK may be using wrong URL. Set extra.API_URL in app.json and rebuild.'
-          : !__DEV__ && isNetworkFailed && isRunPod
-            ? 'RunPod: Check step log for "1.5 Connectivity". If that failed, the phone cannot reach the proxy (Wi‑Fi, DNS, or pod offline). If 1.5 OK but step 6 failed, the proxy may be dropping large POST requests.'
-            : null;
-      const fullDetail = [
-        e?.name && e.name !== 'Error' ? `Type: ${e.name}` : null,
-        e?.message ? `Message: ${e.message}` : null,
-        e?.code != null ? `Code: ${e.code}` : null,
-        e?.status != null ? `Status: ${e.status}` : null,
-        `URL: ${TRY_ON_URL}`,
-        devHint,
-      ]
-        .filter(Boolean)
-        .join('\n');
-      const displayError = fullDetail || shortMsg || String(e);
-      setTryOnError(displayError);
-      Alert.alert('Error', shortMsg);
+      const userMsg = toUserSafeTryOnError(e);
+      setTryOnError(userMsg);
+      Alert.alert('Try-on failed', userMsg);
     } finally {
       setLoading(false);
     }

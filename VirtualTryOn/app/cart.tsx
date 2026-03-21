@@ -3,13 +3,16 @@ import { getOuiAssetUrl } from '@/lib/ouiApi';
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
+  Pressable,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -26,7 +29,100 @@ function getItemImageUrl(item: KioskCartItem): string | null {
 
 export default function CartScreen() {
   const router = useRouter();
-  const { items, loading, error, qrToken, invoiceUrl, refreshCart, removeFromCart, addToCart, resetCart } = useKioskCart();
+  const { items, loading, error, cartId, cartUuid, qrToken, invoiceUrl, refreshCart, removeFromCart, addToCart, resetCart } = useKioskCart();
+
+  const [sendFormOpen, setSendFormOpen] = useState(false);
+  const [sendName, setSendName] = useState('');
+  const [sendPhone, setSendPhone] = useState('');
+  const [sendEmail, setSendEmail] = useState('');
+  const [sendLoading, setSendLoading] = useState(false);
+
+  const canSendToStore = useMemo(() => Boolean(cartUuid && cartUuid.length > 0), [cartUuid]);
+
+  async function sendToStoreApi(args: {
+    cartUuid: string;
+    name: string;
+    phone: string;
+    email?: string;
+  }) {
+    const response = await fetch('https://oui.corescent.in/api/kiosk/proceed-to-store', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        cart_uuid: args.cartUuid,
+        name: args.name,
+        phone: args.phone,
+        email: args.email,
+      }),
+    });
+
+    if (!response.ok) {
+      let message = 'Could not submit request.';
+      try {
+        const data = await response.json();
+        message =
+          (typeof data?.message === 'string' && data.message) ||
+          (typeof data?.error === 'string' && data.error) ||
+          message;
+      } catch (_) {}
+      throw new Error(message);
+    }
+
+    return response.json().catch(() => ({ ok: true }));
+  }
+
+  const handleSubmitSendToStore = async () => {
+    if (!canSendToStore) {
+      Alert.alert('Cart not ready', 'Try again in a moment.');
+      return;
+    }
+    const name = sendName.trim();
+    const phone = sendPhone.replace(/\s/g, '').trim();
+    const email = sendEmail.trim();
+
+    if (!name) {
+      Alert.alert('Missing name', 'Please enter your name.');
+      return;
+    }
+    if (!phone || phone.length < 8) {
+      Alert.alert('Missing phone', 'Please enter a valid phone number.');
+      return;
+    }
+    if (email && !/^\S+@\S+\.\S+$/.test(email)) {
+      Alert.alert('Invalid email', 'Please enter a valid email address (or leave it empty).');
+      return;
+    }
+
+    try {
+      setSendLoading(true);
+      await sendToStoreApi({
+        cartUuid: cartUuid as string,
+        name,
+        phone,
+        email: email || undefined,
+      });
+      Alert.alert(
+        'Sent to store',
+        email ? 'Invoice will be sent to your email.' : 'Request saved. Our store will contact you.'
+      );
+      setSendFormOpen(false);
+      setSendLoading(false);
+      setSendName('');
+      setSendPhone('');
+      setSendEmail('');
+    } catch (e: unknown) {
+      setSendLoading(false);
+      Alert.alert('Failed', e instanceof Error ? e.message : 'Could not submit request.');
+    }
+  };
+
+  const closeSendForm = () => {
+    setSendFormOpen(false);
+    setSendLoading(false);
+  };
 
   useEffect(() => {
     refreshCart();
@@ -96,7 +192,7 @@ export default function CartScreen() {
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyTitle}>Your cart is empty</Text>
               <Text style={styles.emptySub}>Add items from Try-on or Home to see them here.</Text>
-              <TouchableOpacity style={styles.primaryBtn} onPress={() => router.replace('/(tabs)')} activeOpacity={0.85}>
+              <TouchableOpacity style={styles.primaryBtn} onPress={() => router.replace('/(tabs)/home' as any)} activeOpacity={0.85}>
                 <Text style={styles.primaryBtnText}>Browse products</Text>
               </TouchableOpacity>
             </View>
@@ -165,12 +261,88 @@ export default function CartScreen() {
                   <View style={styles.qrWrap}>
                     <QRCode value={resolvedInvoiceUrl} size={200} />
                   </View>
+
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (!canSendToStore || sendLoading) return;
+                      setSendFormOpen(true);
+                    }}
+                    activeOpacity={0.9}
+                    disabled={!canSendToStore}
+                    style={styles.sendStoreBtn}
+                  >
+                    {sendLoading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.sendStoreBtnText}>Send to Store</Text>}
+                  </TouchableOpacity>
                 </View>
               ) : null}
             </>
           )}
         </ScrollView>
       )}
+
+      <Modal transparent visible={sendFormOpen} animationType="fade" onRequestClose={closeSendForm}>
+        <View style={styles.modalRoot}>
+          <View style={styles.modalBlueOverlay} />
+          <Pressable style={styles.modalBackdrop} onPress={closeSendForm} />
+          <View style={styles.modalCard}>
+            <Text style={styles.sendFormTitle}>Send invoice to store</Text>
+            <Text style={styles.modalHint}>Name, phone required. Email optional (invoice will be emailed).</Text>
+
+            <Text style={styles.sendLabel}>Name</Text>
+            <TextInput
+              value={sendName}
+              onChangeText={setSendName}
+              placeholder="Enter your name"
+              placeholderTextColor="#9aa3b2"
+              style={styles.input}
+              autoCapitalize="words"
+              editable={!sendLoading}
+            />
+
+            <Text style={styles.sendLabel}>Phone</Text>
+            <TextInput
+              value={sendPhone}
+              onChangeText={setSendPhone}
+              placeholder="Enter phone number"
+              placeholderTextColor="#9aa3b2"
+              style={styles.input}
+              keyboardType="phone-pad"
+              editable={!sendLoading}
+            />
+
+            <Text style={styles.sendLabel}>Email (Optional)</Text>
+            <TextInput
+              value={sendEmail}
+              onChangeText={setSendEmail}
+              placeholder="Enter email (optional)"
+              placeholderTextColor="#9aa3b2"
+              style={styles.input}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              editable={!sendLoading}
+            />
+
+            <View style={styles.sendActions}>
+              <TouchableOpacity
+                onPress={closeSendForm}
+                activeOpacity={0.85}
+                style={styles.secondaryBtn}
+                disabled={sendLoading}
+              >
+                <Text style={styles.secondaryBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSubmitSendToStore}
+                activeOpacity={0.9}
+                style={[styles.primaryBtn2, sendLoading && { opacity: 0.7 }]}
+                disabled={sendLoading}
+              >
+                {sendLoading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryBtn2Text}>Submit</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -236,4 +408,79 @@ const styles = StyleSheet.create({
   removeBtn: { padding: 8 },
   qrHint: { fontSize: 14, color: '#666', marginBottom: 14 },
   qrWrap: { alignItems: 'center', backgroundColor: '#fff', padding: 20, borderRadius: 12, borderWidth: 1, borderColor: '#e5e7eb' },
+
+  sendStoreBtn: {
+    marginTop: 14,
+    backgroundColor: '#6B4EAA',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sendStoreBtnText: { color: '#fff', fontWeight: '800', fontSize: 16 },
+
+  sendForm: {
+    marginTop: 14,
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    padding: 14,
+  },
+  sendFormTitle: { fontSize: 14, fontWeight: '900', color: '#1a1a2e', marginBottom: 12 },
+  sendLabel: { fontSize: 12, fontWeight: '800', color: '#4b5563', marginBottom: 6, marginTop: 10 },
+  modalRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(30,64,175,0.28)',
+    paddingHorizontal: 18,
+  },
+  modalBlueOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(37,99,235,0.20)',
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(37,99,235,0.35)',
+  },
+  modalCard: {
+    width: '100%',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    padding: 14,
+    zIndex: 2,
+  },
+  modalHint: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#6B7280',
+    marginBottom: 8,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#f8fafc',
+    color: '#111827',
+  },
+  sendActions: { flexDirection: 'row', gap: 10, marginTop: 16, justifyContent: 'space-between' },
+  secondaryBtn: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#6B4EAA',
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryBtnText: { color: '#6B4EAA', fontWeight: '800', fontSize: 15 },
+  primaryBtn2: { flex: 1, backgroundColor: '#6B4EAA', borderRadius: 12, paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
+  primaryBtn2Text: { color: '#fff', fontWeight: '900', fontSize: 15 },
 });

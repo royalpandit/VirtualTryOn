@@ -28,15 +28,18 @@ export default function InitialScreen() {
       if (!mounted) return;
       setCheckingSession(false);
       router.replace('/login');
-    }, 4000);
+    }, 900);
 
     (async () => {
       try {
         const session = await getSession();
         if (!mounted) return;
         clearTimeout(timeout);
-        if (session?.accessToken && session?.user?.id) router.replace('/(tabs)');
-        else router.replace('/login');
+        if (session?.accessToken && session?.user?.id) {
+          router.replace('/(tabs)/home' as any);
+        } else {
+          router.replace('/login');
+        }
       } catch {
         if (!mounted) return;
         clearTimeout(timeout);

@@ -46,7 +46,7 @@ function ErrorFallback({ error, onRetry }: { error: Error | null; onRetry: () =>
   const handleGoBack = () => {
     try {
       if (router?.canGoBack?.()) router.back();
-      else router?.replace?.('/(tabs)');
+      else router?.replace?.('/(tabs)/home' as any);
     } catch (_) {
       // Router may be broken; user can kill and reopen app
     }

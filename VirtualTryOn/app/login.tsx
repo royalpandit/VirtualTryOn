@@ -29,7 +29,7 @@ export default function LoginScreen() {
 
   const handleSkip = () => {
     if (loading) return;
-    router.replace('/(tabs)');
+    router.replace('/(tabs)/home' as any);
   };
 
   const handleSignIn = async () => {
@@ -41,7 +41,7 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       await loginSeller({ email: email.trim(), password });
-      router.replace('/(tabs)');
+      router.replace('/(tabs)/home' as any);
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       Alert.alert('Login failed', message || 'Unable to login');
@@ -103,7 +103,6 @@ export default function LoginScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.skipButton} onPress={handleSkip} activeOpacity={0.8} disabled={loading}>
-            <Text style={[styles.skipText, loading && styles.skipTextDisabled]}>Skip for now</Text>
           </TouchableOpacity>
         </KeyboardAvoidingView>
       </SafeAreaView>

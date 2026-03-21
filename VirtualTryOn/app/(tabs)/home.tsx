@@ -1,0 +1,1312 @@
+import { defaultFontFamily } from '@/constants/theme';
+import { useKioskCart } from '@/context/KioskCartContext';
+import { getSession } from '@/lib/auth';
+import { getBannerImageUrl, getBannersByVendor, getCategoryList, getOuiAssetUrl, getSellerProducts, type OuiBannerItem, type OuiCategory, type OuiSellerProduct } from '@/lib/ouiApi';
+import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Animated, Dimensions, Easing, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+type ClothType = 'upper' | 'lower' | 'overall';
+
+function inferClothType(p: OuiSellerProduct): ClothType {
+  const t = p.cloth_type?.toLowerCase();
+  if (t === 'upper' || t === 'lower' || t === 'overall') return t;
+  const cat = p.category?.name?.toLowerCase() ?? '';
+  if (cat.includes('dress')) return 'overall';
+  if (cat.includes('bag') || cat.includes('boot') || cat.includes('sneaker') || cat.includes('accessor') || cat.includes('watch')) return 'upper';
+  if (cat.includes('pant') || cat.includes('jeans') || cat.includes('lower')) return 'lower';
+  return 'upper';
+}
+
+type UiClothItem = {
+  id: string;
+  name: string;
+  price: string;
+  cloth_type: ClothType;
+  image: string;
+  categoryName?: string;
+  categoryId?: number;
+};
+
+type FilterChip = { id: string; name: string };
+
+function canAddToCartId(id: string) {
+  return /^\d+$/.test(id);
+}
+
+function formatTryOnParams(item: UiClothItem) {
+  return {
+    clothId: item.id,
+    clothName: item.name,
+    clothType: item.cloth_type,
+    clothImageUrl: item.image,
+  };
+}
+
+function Pill({
+  label,
+  active,
+  onPress,
+}: {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity onPress={onPress} style={[styles.pill, active && styles.pillActive]} activeOpacity={0.9}>
+      <Text style={[styles.pillText, active && styles.pillTextActive]} numberOfLines={1}>
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
+function BannerCard({
+  banner,
+  onPress,
+  variant,
+}: {
+  banner: OuiBannerItem & { imageUrl: string };
+  onPress: () => void;
+  variant: 'hero' | 'tile';
+}) {
+  const height = variant === 'hero' ? 320 : 140;
+  const overlayPad = variant === 'hero' ? 26 : 18;
+  const titleFont = variant === 'hero' ? 24 : 16;
+  const buttonFont = variant === 'hero' ? 14 : 12;
+
+  return (
+    <TouchableOpacity activeOpacity={0.95} onPress={onPress} style={[styles.bannerCard, { height }]}>
+      <Image source={{ uri: banner.imageUrl }} style={styles.bannerImage} contentFit="fill" />
+      <LinearGradient
+        colors={['rgba(0,0,0,0.62)', 'rgba(0,0,0,0.02)']}
+        style={[styles.bannerOverlay, { padding: overlayPad }]}
+      >
+        <Text style={[styles.bannerTitle, { fontSize: titleFont }]} numberOfLines={2}>
+          {banner.title}
+        </Text>
+        <View style={styles.bannerButtonPill}>
+          <Text style={[styles.bannerButtonText, { fontSize: buttonFont }]} numberOfLines={1}>
+            {variant === 'hero' ? 'Shop Now' : 'Explore'}
+          </Text>
+        </View>
+      </LinearGradient>
+    </TouchableOpacity>
+  );
+}
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+function PagedCarousel<T>({
+  items,
+  pageWidth,
+  intervalMs,
+  renderPage,
+  enabled,
+  showDots = false,
+}: {
+  items: T[];
+  pageWidth: number;
+  intervalMs: number;
+  renderPage: (item: T, index: number) => React.ReactNode;
+  enabled: boolean;
+  showDots?: boolean;
+}) {
+  const scrollRef = useRef<ScrollView>(null);
+  const indexRef = useRef(0);
+  const pageCount = items.length;
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [paused, setPaused] = useState(false);
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (pageCount <= 1) return;
+    if (paused) return;
+
+    const id = setInterval(() => {
+      const next = (indexRef.current + 1) % pageCount;
+      indexRef.current = next;
+      setActiveIndex(next);
+      scrollRef.current?.scrollTo({ x: next * pageWidth, animated: true });
+    }, intervalMs);
+    return () => clearInterval(id);
+  }, [enabled, pageCount, intervalMs, paused, pageWidth]);
+
+  const onMomentumEnd = useCallback(
+    (e: any) => {
+      const x = e?.nativeEvent?.contentOffset?.x ?? 0;
+      const next = Math.round(x / pageWidth);
+      indexRef.current = next;
+      setActiveIndex(next);
+    },
+    [pageWidth]
+  );
+
+  if (items.length === 0) return null;
+
+  return (
+    <View>
+      <ScrollView
+        ref={scrollRef}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onMomentumScrollEnd={onMomentumEnd}
+        onScrollBeginDrag={() => setPaused(true)}
+        onScrollEndDrag={() => setPaused(false)}
+        contentContainerStyle={{ width: pageWidth * items.length }}
+        style={{ width: pageWidth }}
+      >
+        {items.map((item, idx) => (
+          <View key={(item as any)?.id ?? String(idx)} style={{ width: pageWidth }}>
+            {renderPage(item, idx)}
+            {activeIndex === idx ? null : null}
+          </View>
+        ))}
+      </ScrollView>
+      {showDots && items.length > 1 ? (
+        <View style={styles.bannerDotsWrap}>
+          {items.map((_, idx) => (
+            <View key={`dot-${idx}`} style={[styles.bannerDot, activeIndex === idx && styles.bannerDotActive]} />
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function ProductCardMini({
+  item,
+  onPress,
+  onAddToCart,
+}: {
+  item: UiClothItem;
+  onPress: () => void;
+  onAddToCart?: (item: UiClothItem) => void;
+}) {
+  const canAdd = Boolean(onAddToCart && canAddToCartId(item.id));
+  return (
+    <TouchableOpacity activeOpacity={0.9} onPress={onPress} style={styles.productCardMini}>
+      <View style={styles.productImageWrapMini}>
+        <Image source={{ uri: item.image }} style={styles.productImageMini} contentFit="cover" />
+      </View>
+      <MarqueeLabel text={item.name} />
+      {!!item.price && <Text style={styles.productPriceMini}>{item.price}</Text>}
+      {canAdd ? (
+        <TouchableOpacity
+          onPress={(e) => {
+            e?.stopPropagation?.();
+            onAddToCart?.(item);
+          }}
+          activeOpacity={0.9}
+          style={styles.productAddBtnMini}
+        >
+          <Ionicons name="cart-outline" size={14} color="#6B4EAA" />
+        </TouchableOpacity>
+      ) : null}
+    </TouchableOpacity>
+  );
+}
+
+function MarqueeLabel({ text }: { text: string }) {
+  const [enabled, setEnabled] = useState(false);
+  const [containerWidth, setContainerWidth] = useState(0);
+  const [textWidth, setTextWidth] = useState(0);
+  const translateX = useRef(new Animated.Value(0)).current;
+  const dotsOpacity = useRef(new Animated.Value(1)).current;
+  const distance = Math.max(0, textWidth - containerWidth);
+
+  useEffect(() => {
+    if (!enabled || distance <= 0) {
+      translateX.setValue(0);
+      dotsOpacity.setValue(1);
+      return;
+    }
+
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.delay(900),
+        Animated.timing(dotsOpacity, {
+          toValue: 0,
+          duration: 260,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(translateX, {
+          toValue: -distance,
+          duration: Math.max(1600, distance * 26),
+          easing: Easing.linear,
+          useNativeDriver: true,
+        }),
+        Animated.delay(450),
+        Animated.parallel([
+          Animated.timing(translateX, {
+            toValue: 0,
+            duration: 700,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(dotsOpacity, {
+            toValue: 1,
+            duration: 320,
+            easing: Easing.inOut(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ]),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [enabled, distance, dotsOpacity, translateX]);
+
+  return (
+    <View
+      style={styles.productNameMarqueeWrap}
+      onLayout={(e) => setContainerWidth(e.nativeEvent.layout.width)}
+    >
+      <Text
+        style={styles.productNameMeasure}
+        onLayout={(e) => {
+          const w = e.nativeEvent.layout.width;
+          setTextWidth(w);
+          setEnabled(containerWidth > 0 && w > containerWidth + 2);
+        }}
+      >
+        {text}
+      </Text>
+      {enabled && distance > 0 ? (
+        <View>
+          <Animated.View style={[styles.productNameMarqueeTrack, { transform: [{ translateX }] }]}>
+            <Text style={styles.productNameMini}>{text}</Text>
+            <View style={styles.productNameMarqueeSpacer} />
+            <Text style={styles.productNameMini}>{text}</Text>
+          </Animated.View>
+          <Animated.Text pointerEvents="none" style={[styles.productOverflowDots, { opacity: dotsOpacity }]}>
+            ..
+          </Animated.Text>
+        </View>
+      ) : (
+        <Text style={styles.productNameMini} numberOfLines={1} ellipsizeMode="clip">
+          {text}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function ProductCarouselSection({
+  title,
+  items,
+  onViewAll,
+  onItemPress,
+  onAddToCart,
+}: {
+  title: string;
+  items: UiClothItem[];
+  onViewAll: () => void;
+  onItemPress: (it: UiClothItem) => void;
+  onAddToCart?: (it: UiClothItem) => void;
+}) {
+  const isAllProducts = title === 'All Products';
+  const SIDE_PADDING = 20;
+  const PAGE_WIDTH = SCREEN_WIDTH - SIDE_PADDING * 2;
+  const cardsPerPage = 4;
+  const GAP = 10;
+  const cardWidth = (PAGE_WIDTH - GAP * (cardsPerPage - 1)) / cardsPerPage;
+
+  const pages = useMemo(() => chunk(items, cardsPerPage), [items]);
+  const canAuto = pages.length > 1;
+  const scrollRef = useRef<ScrollView>(null);
+  const indexRef = useRef(0);
+  const [paused, setPaused] = useState(false);
+
+  useEffect(() => {
+    if (!canAuto) return;
+    if (paused) return;
+    const id = setInterval(() => {
+      const next = (indexRef.current + 1) % pages.length;
+      indexRef.current = next;
+      scrollRef.current?.scrollTo({ x: next * PAGE_WIDTH, animated: true });
+    }, 4000);
+    return () => clearInterval(id);
+  }, [canAuto, paused, pages.length, PAGE_WIDTH]);
+
+  return (
+    <View style={styles.sectionBlock}>
+      <View style={styles.sectionHeader}>
+        <Text style={isAllProducts ? styles.sectionTitleAll : styles.sectionTitleCat}>{title}</Text>
+        <TouchableOpacity onPress={onViewAll} activeOpacity={0.85} style={styles.viewAllBtn}>
+          <Text style={styles.viewAllText}>View All ›</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView
+        ref={scrollRef}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        scrollEventThrottle={16}
+        contentContainerStyle={{ width: PAGE_WIDTH * pages.length }}
+        style={{ width: PAGE_WIDTH }}
+        onScrollBeginDrag={() => setPaused(true)}
+        onScrollEndDrag={() => setPaused(false)}
+      >
+        {pages.map((pageItems, pageIndex) => (
+          <View key={`${title}-${pageIndex}`} style={{ width: PAGE_WIDTH }}>
+            <View style={[styles.productPageRow, { gap: GAP }]}>
+              {Array.from({ length: cardsPerPage }).map((_, idx) => {
+                const it = pageItems[idx];
+                if (!it) {
+                  return <View key={`empty-${idx}`} style={{ width: cardWidth }} />;
+                }
+                return (
+                  <View key={it.id} style={{ width: cardWidth }}>
+                    <ProductCardMini item={it} onPress={() => onItemPress(it)} onAddToCart={onAddToCart} />
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+        ))}
+      </ScrollView>
+    </View>
+  );
+}
+
+export default function HomeScreen() {
+  const router = useRouter();
+  const { addToCart, itemCount } = useKioskCart();
+
+  const [loading, setLoading] = useState(true);
+  const [sellerId, setSellerId] = useState<number | null>(null);
+  const [products, setProducts] = useState<OuiSellerProduct[]>([]);
+  const [categories, setCategories] = useState<OuiCategory[]>([]);
+  const [banners, setBanners] = useState<OuiBannerItem[]>([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
+
+  useEffect(() => {
+    let mounted = true;
+    const run = async () => {
+      try {
+        const session = await getSession();
+        const userId = session?.user?.id ?? null;
+        const isLoggedIn = Boolean(session?.accessToken && userId);
+        if (!mounted) return;
+        if (!isLoggedIn) {
+          setSellerId(null);
+          router.replace('/login');
+          return;
+        }
+        setSellerId(userId as number);
+
+        const catRes = await getCategoryList({ accessToken: session?.accessToken ?? null }).catch((e) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.warn('[HOME] getCategoryList failed', msg.length > 120 ? msg.slice(0, 120) + '…' : msg);
+          return { categories: [] as OuiCategory[] };
+        });
+
+        if (!mounted) return;
+        const raw = catRes as any;
+        const list = Array.isArray(raw?.categories) ? raw.categories : Array.isArray(raw?.data?.categories) ? raw.data.categories : [];
+        const safeCategories = list.filter((c: OuiCategory) => Boolean(c) && typeof (c as any).id !== 'undefined');
+        const active = safeCategories.filter((c: OuiCategory) => (c as any).status !== 0);
+        setCategories(active);
+      } catch (e: unknown) {
+        if (!mounted) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        Alert.alert('Failed to load', msg || 'Unable to load categories');
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      mounted = false;
+    };
+  }, [router]);
+
+  useEffect(() => {
+    if (sellerId == null) return;
+    let mounted = true;
+    const run = async () => {
+      try {
+        const session = await getSession();
+        if (!mounted) return;
+
+        const res = await getSellerProducts({
+          sellerId,
+          page: 1,
+          perPage: 50,
+          // If kiosk vendor doesn't require auth, this will work with null accessToken.
+          accessToken: session?.accessToken ?? null,
+        });
+        if (!mounted) return;
+
+        const rawProducts = Array.isArray(res?.products) ? res.products : [];
+        const safeProducts = rawProducts.filter((p) => Boolean(p) && typeof (p as any).id !== 'undefined');
+        setProducts(safeProducts);
+      } catch (e: unknown) {
+        if (!mounted) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg !== 'Unauthorized') Alert.alert('Failed to load products', msg || 'Unable to fetch products');
+        setProducts([]);
+      }
+    };
+    run();
+    return () => {
+      mounted = false;
+    };
+  }, [sellerId]);
+
+  useEffect(() => {
+    if (sellerId == null) return;
+    let mounted = true;
+    const run = async () => {
+      try {
+        const res = await getBannersByVendor(sellerId);
+        if (!mounted) return;
+        const list = Array.isArray(res?.banners) ? res.banners : [];
+        const active = list.filter((b) => b && ((b as any).status === undefined || (b as any).status === 1));
+        setBanners(active);
+      } catch (e) {
+        if (mounted) setBanners([]);
+      }
+    };
+    run();
+    return () => {
+      mounted = false;
+    };
+  }, [sellerId]);
+
+  const filterChips: FilterChip[] = useMemo(() => {
+    return [{ id: 'all', name: 'All' }, ...categories.map((c) => ({ id: String(c.id), name: c.name }))];
+  }, [categories]);
+
+  const uiItems: UiClothItem[] = useMemo(() => {
+    const mapped: UiClothItem[] = [];
+    for (const p of products) {
+      const id = (p as any)?.id;
+      if (id == null) continue;
+      const name = (p.name ?? (p as any).short_name ?? '').toString().trim();
+      if (!name) continue;
+
+      const effectivePrice = p.offer_price != null ? p.offer_price : p.price;
+      const price =
+        typeof effectivePrice === 'number' && Number.isFinite(effectivePrice)
+          ? `₹${effectivePrice}`
+          : effectivePrice != null
+            ? `₹${String(effectivePrice)}`
+            : '';
+
+      const imgPath = p.thumb_image ?? p.image;
+      const imageUrl =
+        typeof imgPath === 'string'
+          ? imgPath.startsWith('http')
+            ? imgPath
+            : getOuiAssetUrl(imgPath) ?? null
+          : null;
+
+      if (!imageUrl) continue; // "No hardcoded placeholders": only show items with real images.
+
+      const clothType = inferClothType(p);
+      const categoryId = (p as any).category_id ?? p.category?.id;
+
+      mapped.push({
+        id: String(id),
+        name,
+        price,
+        cloth_type: clothType,
+        image: imageUrl,
+        categoryName: p.category?.name,
+        categoryId: typeof categoryId === 'number' ? categoryId : undefined,
+      });
+    }
+    return mapped;
+  }, [products]);
+
+  const heroBanners = useMemo(() => {
+    const sorted = [...banners].sort(
+      (a, b) => ((a.priority ?? 999) as number) - ((b.priority ?? 999) as number)
+    );
+    const withImages = sorted
+      .map((b) => {
+        const url = getBannerImageUrl(b);
+        if (!url) return null;
+        return { ...b, imageUrl: url } as OuiBannerItem & { imageUrl: string };
+      })
+      .filter((x): x is OuiBannerItem & { imageUrl: string } => x != null);
+    return withImages;
+  }, [banners]);
+
+  const SIDE_PADDING = 20;
+  const PAGE_WIDTH = SCREEN_WIDTH - SIDE_PADDING * 2;
+
+  const productsByCategoryId = useMemo(() => {
+    const map: Record<string, UiClothItem[]> = {};
+    for (const c of categories) map[String(c.id)] = [];
+    for (const it of uiItems) {
+      if (it.categoryId == null) continue;
+      const key = String(it.categoryId);
+      if (!map[key]) continue;
+      map[key].push(it);
+    }
+    return map;
+  }, [categories, uiItems]);
+
+  const categorySections = useMemo(() => {
+    return categories
+      .map((cat) => ({ cat, items: productsByCategoryId[String(cat.id)] ?? [] }))
+      .filter((x) => x.items.length > 0)
+      .slice(0, 4);
+  }, [categories, productsByCategoryId]);
+
+  const visibleProducts: UiClothItem[] = useMemo(() => {
+    if (selectedCategoryId === 'all') return uiItems;
+    const id = parseInt(selectedCategoryId, 10);
+    if (!Number.isFinite(id)) return uiItems;
+    return uiItems.filter((p) => p.categoryId === id);
+  }, [selectedCategoryId, uiItems]);
+
+  const emptyState = !loading && visibleProducts.length === 0;
+  const showSignInPrompt = !loading && sellerId == null;
+
+  const onClothPress = useCallback(
+    (item: UiClothItem) => {
+      const params = formatTryOnParams(item);
+      router.push({ pathname: '/try-on', params });
+    },
+    [router]
+  );
+
+  const handleAddToCart = useCallback(
+    async (item: UiClothItem) => {
+      if (!canAddToCartId(item.id)) return;
+      try {
+        await addToCart(Number(item.id), 1);
+        Alert.alert('Added', 'Item added to cart.');
+      } catch (e) {
+        Alert.alert('Error', e instanceof Error ? e.message : 'Could not add to cart.');
+      }
+    },
+    [addToCart]
+  );
+
+  const handleViewAll = useCallback(() => {
+    router.push({
+      pathname: '/products',
+      params: { mode: 'all' },
+    } as any);
+  }, [router]);
+
+  const handleShopNow = useCallback(() => {
+    router.push('/(tabs)/explore');
+  }, [router]);
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <Text style={styles.brandText}>OUI</Text>
+            <Text style={styles.brandTagline}>Style that defines you</Text>
+          </View>
+
+          <TouchableOpacity
+            onPress={() => router.push('/cart')}
+            activeOpacity={0.85}
+            style={styles.cartBtn}
+          >
+            <Ionicons name="cart-outline" size={20} color={itemCount > 0 ? '#6B4EAA' : '#6B4EAA'} />
+            {itemCount > 0 ? <View style={styles.cartDot} /> : null}
+          </TouchableOpacity>
+        </View>
+
+        {loading ? (
+          <View style={styles.loadingWrap}>
+            <ActivityIndicator size="large" color="#6B4EAA" />
+            <Text style={styles.loadingText}>Loading collection…</Text>
+          </View>
+        ) : null}
+
+        {showSignInPrompt ? (
+          <View style={styles.emptyWrap}>
+            <Text style={styles.emptyTitle}>Welcome to Virtual Try-On</Text>
+            <Text style={styles.emptySubtext}>Sign in to access your product collection</Text>
+            <TouchableOpacity style={styles.signInBtn} onPress={() => router.push('/login')} activeOpacity={0.9}>
+              <Text style={styles.signInBtnText}>Sign In</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
+        {!showSignInPrompt && heroBanners.length > 0 ? (
+          <View style={styles.heroWrap}>
+            <PagedCarousel
+              items={heroBanners}
+              pageWidth={PAGE_WIDTH}
+              intervalMs={2000}
+              enabled
+              showDots
+              renderPage={(banner) => <BannerCard banner={banner} variant="hero" onPress={handleShopNow} />}
+            />
+          </View>
+        ) : null}
+
+        {!showSignInPrompt && filterChips.length > 0 ? (
+          <View style={styles.pillsWrap}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pillsScroll}>
+              {filterChips.map((chip) => (
+                <Pill key={chip.id} label={chip.name} active={selectedCategoryId === chip.id} onPress={() => setSelectedCategoryId(chip.id)} />
+              ))}
+            </ScrollView>
+          </View>
+        ) : null}
+
+        {!showSignInPrompt && !emptyState ? (
+          <View style={styles.feedWrap}>
+            <ProductCarouselSection
+              title="All Products"
+              items={visibleProducts.slice(0, 32)}
+              onViewAll={handleViewAll}
+              onItemPress={onClothPress}
+              onAddToCart={handleAddToCart}
+            />
+
+            {selectedCategoryId === 'all' && categorySections.length > 0 ? (
+              <>
+                {categorySections.slice(0, 2).map((sec, idx) => (
+                  <View key={`sec-${sec.cat.id}`}>
+                    <ProductCarouselSection
+                      title={sec.cat.name}
+                      items={sec.items.slice(0, 24)}
+                      onViewAll={() =>
+                        router.push({
+                          pathname: '/products',
+                          params: { mode: 'category', categoryId: String(sec.cat.id), categoryName: sec.cat.name },
+                        } as any)
+                      }
+                      onItemPress={onClothPress}
+                      onAddToCart={handleAddToCart}
+                    />
+                    {heroBanners[0] ? (
+                      <View style={styles.bannerTileWrap}>
+                        <BannerCard
+                          banner={heroBanners[(idx + 1) % heroBanners.length]}
+                          variant="tile"
+                          onPress={handleShopNow}
+                        />
+                      </View>
+                    ) : null}
+                  </View>
+                ))}
+
+                {heroBanners[0] ? (
+                  <View style={styles.bannerTileWrap}>
+                    <BannerCard banner={heroBanners[0]} variant="tile" onPress={handleShopNow} />
+                  </View>
+                ) : null}
+
+                {categorySections.slice(2).map((sec, jdx) => {
+                  const globalIdx = jdx + 2;
+                  return (
+                    <View key={`sec2-${sec.cat.id}`}>
+                      <ProductCarouselSection
+                        title={sec.cat.name}
+                        items={sec.items.slice(0, 24)}
+                        onViewAll={() =>
+                          router.push({
+                            pathname: '/products',
+                            params: { mode: 'category', categoryId: String(sec.cat.id), categoryName: sec.cat.name },
+                          } as any)
+                        }
+                        onItemPress={onClothPress}
+                        onAddToCart={handleAddToCart}
+                      />
+                      {heroBanners[0] ? (
+                        <View style={styles.bannerTileWrap}>
+                          <BannerCard
+                            banner={heroBanners[(globalIdx + 1) % heroBanners.length]}
+                            variant="tile"
+                            onPress={handleShopNow}
+                          />
+                        </View>
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </>
+            ) : null}
+          </View>
+        ) : null}
+
+        {emptyState && !showSignInPrompt ? (
+          <View style={styles.emptyWrap}>
+            <Text style={styles.emptyTitle}>No Products Available</Text>
+            <Text style={styles.emptySubtext}>Browse categories to discover our collection</Text>
+            <TouchableOpacity style={styles.browseBtn} onPress={() => router.push('/(tabs)/explore')} activeOpacity={0.9}>
+              <Text style={styles.browseBtnText}>Explore Categories</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
+        <View style={{ height: 60 }} />
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+  },
+  scrollContent: {
+    paddingBottom: 40,
+  },
+
+  header: {
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(248,249,250,0.92)',
+  },
+  headerLeft: {
+    flexDirection: 'column',
+  },
+  brandText: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#2d3335',
+    letterSpacing: 0.3,
+    fontFamily: defaultFontFamily,
+    lineHeight: 32,
+  },
+  brandTagline: {
+    marginTop: 2,
+    fontSize: 12,
+    color: '#5a6062',
+    letterSpacing: 1.8,
+    textTransform: 'uppercase',
+    fontWeight: '600',
+    fontFamily: defaultFontFamily,
+  },
+  cartBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.75)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.8)',
+  },
+  cartDot: {
+    position: 'absolute',
+    right: 9,
+    top: 9,
+    width: 9,
+    height: 9,
+    borderRadius: 999,
+    backgroundColor: '#6d567e',
+  },
+
+  loadingWrap: {
+    paddingVertical: 70,
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 14,
+    fontSize: 16,
+    color: '#6B7280',
+    fontWeight: '600',
+    fontFamily: defaultFontFamily,
+  },
+
+  emptyWrap: {
+    paddingVertical: 90,
+    paddingHorizontal: 30,
+    alignItems: 'center',
+  },
+  emptyTitle: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#1F2937',
+    textAlign: 'center',
+    marginBottom: 10,
+    fontFamily: defaultFontFamily,
+  },
+  emptySubtext: {
+    fontSize: 16,
+    color: '#6B7280',
+    textAlign: 'center',
+    marginBottom: 26,
+    fontFamily: defaultFontFamily,
+    fontWeight: '600',
+  },
+  signInBtn: {
+    backgroundColor: '#6B4EAA',
+    paddingVertical: 16,
+    paddingHorizontal: 42,
+    borderRadius: 14,
+  },
+  signInBtnText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
+    fontFamily: defaultFontFamily,
+  },
+  browseBtn: {
+    borderWidth: 2,
+    borderColor: '#6B4EAA',
+    paddingVertical: 16,
+    paddingHorizontal: 40,
+    borderRadius: 14,
+  },
+  browseBtnText: {
+    color: '#6B4EAA',
+    fontSize: 18,
+    fontWeight: '700',
+    fontFamily: defaultFontFamily,
+  },
+
+  heroWrap: {
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  bannerDotsWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 8,
+  },
+  bannerDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 99,
+    backgroundColor: 'rgba(90,96,98,0.35)',
+  },
+  bannerDotActive: {
+    width: 20,
+    borderRadius: 8,
+    backgroundColor: '#575e7c',
+  },
+  heroCardsRow: {
+    flexDirection: 'row',
+    gap: 16,
+  },
+  heroCard: {
+    flex: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#f1f4f5',
+    position: 'relative',
+  },
+  heroCardBig: {
+    flex: 0.72,
+  },
+  heroCardSmall: {
+    flex: 0.28,
+  },
+  heroCardImage: {
+    position: 'absolute',
+    left: -12.5,
+    top: 0,
+    bottom: 0,
+    right: -12.5,
+  },
+  heroOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  heroTitle: {
+    fontWeight: '900',
+    color: '#fff',
+    fontFamily: defaultFontFamily,
+    marginBottom: 12,
+    letterSpacing: 0.2,
+  },
+  heroButtonPill: {
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  heroButtonText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 14,
+    fontFamily: defaultFontFamily,
+  },
+
+  pillsWrap: {
+    paddingTop: 16,
+    paddingBottom: 10,
+    paddingHorizontal: 20,
+    marginBottom: 12,
+  },
+  pillsScroll: {
+    gap: 10,
+    paddingVertical: 4,
+  },
+  pill: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: '#e5e9eb',
+    borderWidth: 1,
+    borderColor: '#e5e9eb',
+  },
+  pillActive: {
+    backgroundColor: '#2d3335',
+    borderColor: '#2d3335',
+  },
+  pillText: {
+    fontSize: 14,
+    color: '#2d3335',
+    fontWeight: '700',
+    fontFamily: defaultFontFamily,
+  },
+  pillTextActive: {
+    color: '#f8f9fa',
+  },
+
+  viewAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: 'transparent',
+  },
+  viewAllText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#575e7c',
+    fontFamily: defaultFontFamily,
+  },
+
+  featuredGrid: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    gap: 12,
+  },
+  featuredLeft: {
+    flex: 0.58,
+  },
+  featuredRight: {
+    flex: 0.42,
+  },
+  featuredRightItem: {
+    flex: 1,
+  },
+
+  productCard: {
+    backgroundColor: '#f1f4f5',
+    borderRadius: 12,
+    overflow: 'hidden',
+    position: 'relative',
+    borderWidth: 1,
+    borderColor: '#f1f4f5',
+  },
+  productCardGrid: {
+    // Equal grid cards
+    borderRadius: 12,
+  },
+  productImageWrap: {
+    width: '100%',
+    backgroundColor: '#f1f4f5',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  productImage: {
+    width: '100%',
+  },
+  productMeta: {
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  productName: {
+    fontSize: 14,
+    color: '#2d3335',
+    fontWeight: '700',
+    fontFamily: defaultFontFamily,
+    lineHeight: 18,
+    marginBottom: 8,
+  },
+  productNameSmall: {
+    fontSize: 13,
+    lineHeight: 16,
+  },
+  productPrice: {
+    fontSize: 14,
+    fontWeight: '900',
+    fontFamily: defaultFontFamily,
+  },
+  productAddBtn: {
+    position: 'absolute',
+    right: 10,
+    top: 10,
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.7)',
+    borderWidth: 1,
+    borderColor: 'rgba(107,78,170,0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  restGrid: {
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    columnGap: 12,
+    rowGap: 12,
+  },
+  restGridItem: {
+    width: (SCREEN_WIDTH - 40 - 12) / 2, // two columns minus gap
+  },
+  feedWrap: {
+    paddingBottom: 32,
+  },
+
+  // Banner
+  bannerCard: {
+    width: '100%',
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: '#ffffff',
+    position: 'relative',
+    shadowColor: '#111827',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.14,
+    shadowRadius: 16,
+    elevation: 5,
+  },
+  bannerImage: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+  },
+  bannerOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    top: 0,
+    justifyContent: 'flex-end',
+  },
+  bannerTitle: {
+    fontWeight: '900',
+    color: '#fff',
+    fontFamily: defaultFontFamily,
+    letterSpacing: 0.2,
+    marginBottom: 14,
+  },
+  bannerButtonPill: {
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  bannerButtonText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontFamily: defaultFontFamily,
+    textAlign: 'center',
+  },
+
+  bannerTileWrap: {
+    paddingHorizontal: 20,
+    marginTop: 12,
+    marginBottom: 12,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    paddingTop: 10,
+    paddingBottom: 10,
+    borderWidth: 1,
+    borderColor: '#eef1f4',
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    elevation: 4,
+  },
+
+  bannerTileWrapEnd: {
+    paddingHorizontal: 20,
+    marginTop: 12,
+    marginBottom: 24,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    paddingTop: 10,
+    paddingBottom: 10,
+    borderWidth: 1,
+    borderColor: '#eef1f4',
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    elevation: 4,
+  },
+
+  // Sections
+  sectionBlock: {
+    paddingHorizontal: 20,
+    marginVertical: 12,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    paddingTop: 14,
+    paddingBottom: 12,
+    borderWidth: 1,
+    borderColor: '#eef1f4',
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.09,
+    shadowRadius: 16,
+    elevation: 5,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  sectionTitleAll: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#2d3335',
+    fontFamily: defaultFontFamily,
+  },
+  sectionTitleCat: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#5a6062',
+    fontFamily: defaultFontFamily,
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+  },
+
+  productPageRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+
+  // Mini product card (4-up carousel)
+  productCardMini: {
+    backgroundColor: '#f1f4f5',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+    position: 'relative',
+    shadowColor: '#111827',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.09,
+    shadowRadius: 9,
+    elevation: 3,
+  },
+  productImageWrapMini: {
+    width: '100%',
+    aspectRatio: 1,
+    backgroundColor: '#e9edf0',
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginBottom: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  productImageMini: {
+    width: '100%',
+    height: '100%',
+  },
+  productNameMini: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#2d3335',
+    fontFamily: defaultFontFamily,
+    lineHeight: 14,
+  },
+  productNameMarqueeWrap: {
+    width: '100%',
+    overflow: 'hidden',
+    marginBottom: 4,
+    minHeight: 14,
+  },
+  productNameMarqueeTrack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  productNameMarqueeSpacer: {
+    width: 18,
+  },
+  productNameMeasure: {
+    position: 'absolute',
+    opacity: 0,
+    left: -9999,
+    top: -9999,
+    fontSize: 12,
+    fontWeight: '800',
+    fontFamily: defaultFontFamily,
+  },
+  productOverflowDots: {
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    color: '#2d3335',
+    fontSize: 12,
+    fontWeight: '900',
+    fontFamily: defaultFontFamily,
+    backgroundColor: '#f1f4f5',
+    paddingLeft: 3,
+  },
+  productPriceMini: {
+    fontSize: 12,
+    fontWeight: '900',
+    color: '#575e7c',
+    fontFamily: defaultFontFamily,
+  },
+  productAddBtnMini: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.7)',
+    borderWidth: 1,
+    borderColor: 'rgba(107,78,170,0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});
+
