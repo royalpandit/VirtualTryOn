@@ -1,0 +1,185 @@
+import { FontFamily } from '@/constants/theme';
+import { getSession, logout } from '@/lib/auth';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+type UserInfo = { name?: string; email?: string; phone?: string };
+
+export default function ProfileScreen() {
+  const router = useRouter();
+  const [user, setUser] = useState<UserInfo | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const session = await getSession();
+      if (session?.user) setUser({ name: session.user.name, email: session.user.email, phone: session.user.phone });
+    })();
+  }, []);
+
+  const handleLogout = () => {
+    Alert.alert('Logout', 'Are you sure you want to logout?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Logout',
+        style: 'destructive',
+        onPress: async () => {
+          await logout();
+          router.replace('/login');
+        },
+      },
+    ]);
+  };
+
+  const initials = (user?.name ?? 'U')
+    .split(' ')
+    .map((w) => w[0]?.toUpperCase() ?? '')
+    .join('')
+    .slice(0, 2);
+
+  const menuItems = [
+    { icon: 'bag-handle-outline' as const, label: 'My Orders', onPress: () => router.push('/cart') },
+    { icon: 'heart-outline' as const, label: 'Wishlist', onPress: () => {} },
+    { icon: 'location-outline' as const, label: 'Addresses', onPress: () => {} },
+    { icon: 'card-outline' as const, label: 'Payment Methods', onPress: () => {} },
+    { icon: 'settings-outline' as const, label: 'Settings', onPress: () => {} },
+    { icon: 'help-circle-outline' as const, label: 'Help & Support', onPress: () => {} },
+  ];
+
+  return (
+    <SafeAreaView style={st.safe} edges={['top']}>
+      <View style={st.header}>
+        <Text style={st.title}>Profile</Text>
+      </View>
+
+      {/* Avatar + info */}
+      <View style={st.profileCard}>
+        <LinearGradient colors={['#575E7C', '#D5DBFF']} style={st.avatar}>
+          <Text style={st.avatarText}>{initials}</Text>
+        </LinearGradient>
+        <View style={st.profileInfo}>
+          <Text style={st.profileName}>{user?.name ?? 'User'}</Text>
+          <Text style={st.profileEmail}>{user?.email ?? ''}</Text>
+          {user?.phone ? <Text style={st.profilePhone}>{user.phone}</Text> : null}
+        </View>
+      </View>
+
+      {/* Menu */}
+      <View style={st.menu}>
+        {menuItems.map((m) => (
+          <TouchableOpacity key={m.label} style={st.menuItem} onPress={m.onPress} activeOpacity={0.8}>
+            <View style={st.menuIconWrap}>
+              <Ionicons name={m.icon} size={20} color="#575E7C" />
+            </View>
+            <Text style={st.menuLabel}>{m.label}</Text>
+            <Ionicons name="chevron-forward" size={18} color="#9BA1A6" />
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* Logout */}
+      <TouchableOpacity style={st.logoutBtn} onPress={handleLogout} activeOpacity={0.85}>
+        <Ionicons name="log-out-outline" size={20} color="#A83836" />
+        <Text style={st.logoutText}>Logout</Text>
+      </TouchableOpacity>
+    </SafeAreaView>
+  );
+}
+
+const st = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: '#F8F9FA' },
+  header: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 4 },
+  title: { fontSize: 26, fontFamily: FontFamily.headingExtra, color: '#2D3335' },
+
+  profileCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 20,
+    gap: 16,
+  },
+  avatar: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: {
+    fontSize: 22,
+    fontFamily: FontFamily.headingExtra,
+    color: '#fff',
+  },
+  profileInfo: { flex: 1 },
+  profileName: {
+    fontSize: 18,
+    fontFamily: FontFamily.heading,
+    color: '#2D3335',
+  },
+  profileEmail: {
+    fontSize: 13,
+    fontFamily: FontFamily.body,
+    color: '#5A6062',
+    marginTop: 2,
+  },
+  profilePhone: {
+    fontSize: 13,
+    fontFamily: FontFamily.body,
+    color: '#5A6062',
+    marginTop: 1,
+  },
+
+  menu: {
+    marginHorizontal: 20,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#EEF1F4',
+    overflow: 'hidden',
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F4F5',
+    gap: 14,
+  },
+  menuIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#F1F4F5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuLabel: {
+    flex: 1,
+    fontSize: 15,
+    fontFamily: FontFamily.headingSemiBold,
+    color: '#2D3335',
+  },
+
+  logoutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginHorizontal: 20,
+    marginTop: 24,
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: '#FFF5F5',
+    borderWidth: 1,
+    borderColor: 'rgba(168,56,54,0.15)',
+  },
+  logoutText: {
+    fontSize: 15,
+    fontFamily: FontFamily.headingSemiBold,
+    color: '#A83836',
+  },
+});

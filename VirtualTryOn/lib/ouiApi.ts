@@ -235,20 +235,40 @@ export type OuiSellerProductListResponse = {
   pagination?: { current_page: number; per_page: number; total: number; last_page: number };
 };
 
-/** Normalize API response: API may return { products } or { data: { products } } */
+/** Normalize API response: API may return { products } or { data: { products } }
+ *  or paginated { products: { data: [...], total, ... } } from /api/product. */
 function normalizeSellerProductsResponse(json: any, fallbackSellerId: number): OuiSellerProductListResponse {
-  const rawProducts = Array.isArray(json?.products) ? json.products : Array.isArray(json?.data?.products) ? json.data.products : [];
+  // Handle paginated response: { products: { data: [...], total, current_page, ... } }
+  const paginatedData = json?.products?.data;
+  const rawProducts = Array.isArray(paginatedData)
+    ? paginatedData
+    : Array.isArray(json?.products)
+      ? json.products
+      : Array.isArray(json?.data?.products)
+        ? json.data.products
+        : [];
   const rawOrderProducts = Array.isArray(json?.orderProducts)
     ? json.orderProducts
     : Array.isArray(json?.data?.orderProducts)
       ? json.data.orderProducts
       : [];
   const products = rawProducts.length > 0 ? rawProducts : rawOrderProducts;
+
+  // Build pagination from either format
+  const pagination = json?.pagination ?? json?.data?.pagination ?? (
+    json?.products?.total != null ? {
+      current_page: json.products.current_page ?? 1,
+      per_page: json.products.per_page ?? products.length,
+      total: json.products.total ?? products.length,
+      last_page: json.products.last_page ?? 1,
+    } : undefined
+  );
+
   return {
     products,
     seller_id: json?.seller_id ?? json?.data?.seller_id ?? fallbackSellerId,
     orderProducts: json?.orderProducts ?? json?.data?.orderProducts ?? [],
-    pagination: json?.pagination ?? json?.data?.pagination,
+    pagination,
   };
 }
 
@@ -264,30 +284,42 @@ export async function getSellerProducts(params: {
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (params.accessToken) headers.Authorization = `Bearer ${params.accessToken}`;
 
-  const url = new URL(`${baseUrl}/api/seller/product`);
-  if (params.page != null) url.searchParams.set('page', String(params.page));
-  if (params.perPage != null) url.searchParams.set('per_page', String(params.perPage));
-  if (params.category_id != null && params.category_id > 0) url.searchParams.set('category_id', String(params.category_id));
-  if (params.sub_category_id != null && params.sub_category_id > 0) url.searchParams.set('sub_category_id', String(params.sub_category_id));
+  // Try authenticated seller endpoint first
+  const sellerUrl = new URL(`${baseUrl}/api/seller/product`);
+  if (params.page != null) sellerUrl.searchParams.set('page', String(params.page));
+  if (params.perPage != null) sellerUrl.searchParams.set('per_page', String(params.perPage));
+  if (params.category_id != null && params.category_id > 0) sellerUrl.searchParams.set('category_id', String(params.category_id));
+  if (params.sub_category_id != null && params.sub_category_id > 0) sellerUrl.searchParams.set('sub_category_id', String(params.sub_category_id));
 
-  const requestUrl = url.toString();
   if (__DEV__) {
-    console.log('[getSellerProducts] REQUEST:', requestUrl);
-    console.log('[getSellerProducts] params: sellerId=', params.sellerId, 'category_id=', params.category_id ?? 'none', 'sub_category_id=', params.sub_category_id ?? 'none');
+    console.log('[getSellerProducts] REQUEST:', sellerUrl.toString());
   }
 
-  const res = await fetch(requestUrl, { method: 'GET', headers });
-  if (res.status === 401) throw new Error('Unauthorized');
-  if (!res.ok) throw new Error(await parseError(res));
-  const json = await res.json();
+  const sellerRes = await fetch(sellerUrl.toString(), { method: 'GET', headers });
+
+  if (sellerRes.ok) {
+    const json = await sellerRes.json();
+    const out = normalizeSellerProductsResponse(json, params.sellerId);
+    if (__DEV__) console.log('[getSellerProducts] seller endpoint OK, count=', out.products.length);
+    return out;
+  }
+
+  if (sellerRes.status === 401) throw new Error('Unauthorized');
+
+  // Seller endpoint failed (403 = not a seller, etc.) — fall back to public /api/product
+  if (__DEV__) console.log('[getSellerProducts] seller endpoint', sellerRes.status, '— falling back to /api/product');
+
+  const publicUrl = new URL(`${baseUrl}/api/product`);
+  if (params.page != null) publicUrl.searchParams.set('page', String(params.page));
+  if (params.category_id != null && params.category_id > 0) publicUrl.searchParams.set('category', String(params.category_id));
+
+  const publicRes = await fetch(publicUrl.toString(), { method: 'GET', headers: { Accept: 'application/json' } });
+  if (!publicRes.ok) throw new Error(await parseError(publicRes));
+
+  const json = await publicRes.json();
   const out = normalizeSellerProductsResponse(json, params.sellerId);
   if (__DEV__ && Array.isArray(out.products)) {
-    console.log('[getSellerProducts] RESPONSE: count=', out.products.length);
-    out.products.slice(0, 8).forEach((p: OuiSellerProduct, i: number) => {
-      const catId = (p as any).category_id ?? p.category?.id;
-      console.log(`  [${i}] id=${p.id} name=${(p.name || p.short_name || '').slice(0, 30)} category_id=${catId} category.name=${p.category?.name ?? '—'}`);
-    });
-    if (out.products.length > 8) console.log('  ... and', out.products.length - 8, 'more');
+    console.log('[getSellerProducts] public fallback, count=', out.products.length);
   }
   return out;
 }

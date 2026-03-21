@@ -1,45 +1,80 @@
 /**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
+ * Design-system constants – colours, typography, spacing.
  */
 
 import { Platform } from 'react-native';
 
-const tintColorLight = '#6B4EAA';
-const tintColorDark = '#9D7DD9';
+/* ───── colour palette (from design mockup) ───── */
+const tintColorLight = '#2D3335';
+const tintColorDark = '#F8F9FA';
 
 export const Colors = {
   light: {
-    text: '#1a1a2e',
-    background: '#fff',
+    text: '#2D3335',
+    textSecondary: '#5A6062',
+    background: '#F8F9FA',
     tint: tintColorLight,
-    icon: '#6B4EAA',
-    tabIconDefault: '#888',
+    icon: '#2D3335',
+    tabIconDefault: '#9BA1A6',
     tabIconSelected: tintColorLight,
-    primary: '#6B4EAA',
-    primaryLight: 'rgba(107,78,170,0.15)',
+    primary: '#2D3335',
+    primaryLight: 'rgba(45,51,53,0.10)',
+    accent: '#575E7C',
+    accentLight: '#D5DBFF',
+    purple: '#6D567E',
+    purpleLight: '#E1C4F4',
+    card: '#F1F4F5',
+    pill: '#E5E9EB',
+    border: '#EEF1F4',
+    badgeRed: '#A83836',
   },
   dark: {
     text: '#ECEDEE',
+    textSecondary: '#9BA1A6',
     background: '#1a1a2e',
     tint: tintColorDark,
-    icon: '#9D7DD9',
-    tabIconDefault: '#9BA1A6',
+    icon: '#F8F9FA',
+    tabIconDefault: '#5A6062',
     tabIconSelected: tintColorDark,
-    primary: '#9D7DD9',
-    primaryLight: 'rgba(157,125,217,0.2)',
+    primary: '#F8F9FA',
+    primaryLight: 'rgba(248,249,250,0.12)',
+    accent: '#D5DBFF',
+    accentLight: '#575E7C',
+    purple: '#E1C4F4',
+    purpleLight: '#6D567E',
+    card: '#2A2A3E',
+    pill: '#3A3A50',
+    border: '#3A3A50',
+    badgeRed: '#EF4444',
   },
+};
+
+/* ───── typography ───── */
+
+/** Font-family tokens – mapped after expo-font loads the assets */
+export const FontFamily = {
+  /** Brand headings (OUI logo, hero titles) */
+  brand: 'AbhayaLibre_700Bold',
+  /** Section titles, buttons */
+  heading: 'Manrope_700Bold',
+  headingSemiBold: 'Manrope_600SemiBold',
+  headingExtra: 'Manrope_800ExtraBold',
+  /** Body, prices, labels */
+  body: 'Inter_400Regular',
+  bodyMedium: 'Inter_500Medium',
+  bodySemiBold: 'Inter_600SemiBold',
+  bodyBold: 'Inter_700Bold',
 };
 
 export const Fonts = Platform.select({
   ios: {
-    sans: undefined, // System (San Francisco)
+    sans: undefined,
     serif: 'ui-serif',
     rounded: 'ui-rounded',
     mono: 'ui-monospace',
   },
   default: {
-    sans: undefined, // System (Roboto on Android)
+    sans: undefined,
     serif: 'serif',
     rounded: undefined,
     mono: 'monospace',
@@ -53,4 +88,4 @@ export const Fonts = Platform.select({
 });
 
 // Default font family for the app
-export const defaultFontFamily = Fonts.sans;
+export const defaultFontFamily = FontFamily.body;

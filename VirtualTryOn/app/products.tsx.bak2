@@ -1,24 +1,13 @@
 import { FontFamily } from '@/constants/theme';
-import { useKioskCart } from '@/context/KioskCartContext';
-import { useWishlist } from '@/context/WishlistContext';
 import { getSession } from '@/lib/auth';
-import { getBannerImageUrl, getBannersByVendor, getCategoryList, getOuiAssetUrl, getSellerProducts, type OuiBannerItem, type OuiCategory, type OuiSellerProduct } from '@/lib/ouiApi';
+import { getOuiAssetUrl, getSellerProducts, getCategoryList, type OuiSellerProduct, type OuiCategory } from '@/lib/ouiApi';
+import { useKioskCart } from '@/context/KioskCartContext';
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-    ActivityIndicator,
-    Dimensions,
-    FlatList,
-    Modal,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
-} from 'react-native';
+import { ActivityIndicator, Dimensions, FlatList, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -32,7 +21,6 @@ type UiClothItem = {
   id: string;
   name: string;
   price: string;
-  numericPrice: number;
   originalPrice?: string;
   cloth_type: ClothType;
   image: string;
@@ -60,21 +48,10 @@ function getImageUrl(p: OuiSellerProduct): string | null {
   return getOuiAssetUrl(imgPath) ?? null;
 }
 
-type SortOption = 'default' | 'price_low' | 'price_high' | 'name_asc' | 'name_desc';
-
-const SORT_OPTIONS: { key: SortOption; label: string }[] = [
-  { key: 'default', label: 'Default' },
-  { key: 'price_low', label: 'Price: Low to High' },
-  { key: 'price_high', label: 'Price: High to Low' },
-  { key: 'name_asc', label: 'Name: A to Z' },
-  { key: 'name_desc', label: 'Name: Z to A' },
-];
-
 export default function ProductsScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ mode?: string; categoryId?: string; categoryName?: string }>();
   const { addToCart, itemCount } = useKioskCart();
-  const { isWished, toggle: toggleWishlist } = useWishlist();
 
   const mode = typeof params.mode === 'string' ? params.mode : 'all';
   const categoryId = typeof params.categoryId === 'string' ? params.categoryId : undefined;
@@ -84,9 +61,6 @@ export default function ProductsScreen() {
   const [items, setItems] = useState<UiClothItem[]>([]);
   const [categories, setCategories] = useState<OuiCategory[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>(categoryId ?? 'all');
-  const [showFilterModal, setShowFilterModal] = useState(false);
-  const [sortBy, setSortBy] = useState<SortOption>('default');
-  const [bannerUrls, setBannerUrls] = useState<string[]>([]);
 
   useEffect(() => {
     let mounted = true;
@@ -103,7 +77,7 @@ export default function ProductsScreen() {
         const accessToken = session.accessToken;
         const parsedCategoryId = mode === 'category' && categoryId ? parseInt(categoryId, 10) : null;
 
-        const [prodRes, catRes, bannerRes] = await Promise.all([
+        const [prodRes, catRes] = await Promise.all([
           getSellerProducts({
             sellerId: vend,
             page: 1,
@@ -112,18 +86,7 @@ export default function ProductsScreen() {
             category_id: parsedCategoryId != null && Number.isFinite(parsedCategoryId) ? parsedCategoryId : null,
           }),
           getCategoryList({ accessToken }).catch(() => ({ categories: [] as OuiCategory[] })),
-          getBannersByVendor(vend).catch(() => ({ banners: [] as OuiBannerItem[] })),
         ]);
-
-        // Collect all active banner URLs
-        const activeBanners = (bannerRes?.banners ?? []).filter((b: any) => b && b.status !== 0);
-        const sorted = [...activeBanners].sort((a: any, b: any) => ((a.priority ?? 999) - (b.priority ?? 999)));
-        const urls: string[] = [];
-        for (const b of sorted) {
-          const url = getBannerImageUrl(b);
-          if (url) urls.push(url);
-        }
-        setBannerUrls(urls);
 
         if (!mounted) return;
         const rawProducts = Array.isArray(prodRes?.products) ? prodRes.products : [];
@@ -138,7 +101,6 @@ export default function ProductsScreen() {
           if (!imageUrl) continue;
 
           const effectivePrice = p.offer_price != null ? p.offer_price : p.price;
-          const numericPrice = typeof effectivePrice === 'number' ? effectivePrice : parseFloat(String(effectivePrice ?? '0')) || 0;
           const price = typeof effectivePrice === 'number' && Number.isFinite(effectivePrice) ? `₹${effectivePrice}` : effectivePrice != null ? `₹${String(effectivePrice)}` : '';
           const originalPrice = p.offer_price != null && p.price != null && p.offer_price < p.price ? `₹${p.price}` : undefined;
 
@@ -146,7 +108,6 @@ export default function ProductsScreen() {
             id: String(id),
             name: (p.name ?? (p as any).short_name ?? 'Item').toString(),
             price,
-            numericPrice,
             originalPrice,
             cloth_type: inferClothType(p),
             image: imageUrl,
@@ -176,19 +137,10 @@ export default function ProductsScreen() {
   );
 
   const visibleItems = useMemo(() => {
-    let filtered = selectedCategoryId === 'all' ? items : (() => {
-      const id = parseInt(selectedCategoryId, 10);
-      return Number.isFinite(id) ? items.filter((p) => p.categoryId === id) : items;
-    })();
-
-    // Apply sort
-    if (sortBy === 'price_low') filtered = [...filtered].sort((a, b) => a.numericPrice - b.numericPrice);
-    else if (sortBy === 'price_high') filtered = [...filtered].sort((a, b) => b.numericPrice - a.numericPrice);
-    else if (sortBy === 'name_asc') filtered = [...filtered].sort((a, b) => a.name.localeCompare(b.name));
-    else if (sortBy === 'name_desc') filtered = [...filtered].sort((a, b) => b.name.localeCompare(a.name));
-
-    return filtered;
-  }, [selectedCategoryId, items, sortBy]);
+    if (selectedCategoryId === 'all') return items;
+    const id = parseInt(selectedCategoryId, 10);
+    return Number.isFinite(id) ? items.filter((p) => p.categoryId === id) : items;
+  }, [selectedCategoryId, items]);
 
   const handleItemPress = useCallback(
     (item: UiClothItem) => {
@@ -215,21 +167,21 @@ export default function ProductsScreen() {
       <TouchableOpacity activeOpacity={0.9} onPress={() => handleItemPress(item)} style={{ width: CARD_W }}>
         <View style={[st.cardImgWrap, { width: CARD_W, height: CARD_W * 1.3 }]}>
           <Image source={{ uri: item.image }} style={StyleSheet.absoluteFillObject} contentFit="cover" />
-          <TouchableOpacity
-            style={st.heartBtn}
-            activeOpacity={0.8}
-            onPress={(e) => { e.stopPropagation?.(); toggleWishlist(item.id); }}
-          >
-            <Ionicons name={isWished(item.id) ? 'heart' : 'heart-outline'} size={16} color={isWished(item.id) ? '#A83836' : '#2D3335'} />
+          <TouchableOpacity style={st.heartBtn} activeOpacity={0.8}>
+            <Ionicons name="heart-outline" size={16} color="#2D3335" />
           </TouchableOpacity>
           <TouchableOpacity
             style={st.cardCartBtn}
             activeOpacity={0.8}
-            onPress={(e) => { e.stopPropagation?.(); handleAddToCart(item); }}
+            onPress={(e) => {
+              e.stopPropagation?.();
+              handleAddToCart(item);
+            }}
           >
             <Ionicons name="bag-outline" size={14} color="#fff" />
           </TouchableOpacity>
         </View>
+        <Text style={st.cardBrand}>OUI ATELIER</Text>
         <Text style={st.cardName} numberOfLines={1}>{capitalize(item.name)}</Text>
         <View style={st.cardPriceRow}>
           <Text style={st.cardPrice}>{item.price}</Text>
@@ -237,7 +189,7 @@ export default function ProductsScreen() {
         </View>
       </TouchableOpacity>
     ),
-    [handleItemPress, handleAddToCart, isWished, toggleWishlist],
+    [handleItemPress, handleAddToCart],
   );
 
   return (
@@ -254,42 +206,18 @@ export default function ProductsScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Category pills — fixed height, no clipping */}
+      {/* Category pills */}
       {filterChips.length > 1 && (
-        <View style={st.pillsContainer}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={st.pillsRow}>
-            {filterChips.map((chip) => (
-              <TouchableOpacity
-                key={chip.id}
-                style={[st.pill, selectedCategoryId === chip.id && st.pillActive]}
-                activeOpacity={0.85}
-                onPress={() => setSelectedCategoryId(chip.id)}
-              >
-                <Text style={[st.pillText, selectedCategoryId === chip.id && st.pillTextActive]}>{chip.name}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </View>
-      )}
-
-      {/* Active sort indicator */}
-      {sortBy !== 'default' && (
-        <View style={st.sortIndicator}>
-          <Text style={st.sortIndicatorText}>Sorted by: {SORT_OPTIONS.find(s => s.key === sortBy)?.label}</Text>
-          <TouchableOpacity onPress={() => setSortBy('default')} activeOpacity={0.8}>
-            <Ionicons name="close-circle" size={18} color="#575E7C" />
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* Banners carousel */}
-      {!loading && bannerUrls.length > 0 && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: SIDE_PAD, gap: 10, paddingVertical: 10 }}>
-          {bannerUrls.map((url, idx) => (
-            <View key={idx} style={st.promoBanner}>
-              <Image source={{ uri: url }} style={StyleSheet.absoluteFillObject} contentFit="cover" />
-              <LinearGradient colors={['transparent', 'rgba(0,0,0,0.45)']} style={StyleSheet.absoluteFillObject} />
-            </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={st.pillsRow} style={st.pillsWrap}>
+          {filterChips.map((chip) => (
+            <TouchableOpacity
+              key={chip.id}
+              style={[st.pill, selectedCategoryId === chip.id && st.pillActive]}
+              activeOpacity={0.85}
+              onPress={() => setSelectedCategoryId(chip.id)}
+            >
+              <Text style={[st.pillText, selectedCategoryId === chip.id && st.pillTextActive]}>{chip.name}</Text>
+            </TouchableOpacity>
           ))}
         </ScrollView>
       )}
@@ -321,7 +249,7 @@ export default function ProductsScreen() {
 
       {/* Floating Filter & Sort FAB */}
       {!loading && visibleItems.length > 0 && (
-        <TouchableOpacity style={st.fab} activeOpacity={0.9} onPress={() => setShowFilterModal(true)}>
+        <TouchableOpacity style={st.fab} activeOpacity={0.9}>
           <LinearGradient
             colors={['#575E7C', '#D5DBFF']}
             start={{ x: 0, y: 0 }}
@@ -333,52 +261,6 @@ export default function ProductsScreen() {
           </LinearGradient>
         </TouchableOpacity>
       )}
-
-      {/* Filter & Sort Modal */}
-      <Modal visible={showFilterModal} transparent animationType="slide" onRequestClose={() => setShowFilterModal(false)}>
-        <TouchableOpacity style={st.modalOverlay} activeOpacity={1} onPress={() => setShowFilterModal(false)}>
-          <View style={st.modalContent} onStartShouldSetResponder={() => true}>
-            <View style={st.modalHandle} />
-            <Text style={st.modalTitle}>Filter & Sort</Text>
-
-            {/* Sort options */}
-            <Text style={st.modalSectionTitle}>Sort By</Text>
-            {SORT_OPTIONS.map((opt) => (
-              <TouchableOpacity
-                key={opt.key}
-                style={[st.sortOption, sortBy === opt.key && st.sortOptionActive]}
-                activeOpacity={0.85}
-                onPress={() => { setSortBy(opt.key); }}
-              >
-                <Text style={[st.sortOptionText, sortBy === opt.key && st.sortOptionTextActive]}>{opt.label}</Text>
-                {sortBy === opt.key && <Ionicons name="checkmark" size={18} color="#575E7C" />}
-              </TouchableOpacity>
-            ))}
-
-            {/* Category filter */}
-            <Text style={[st.modalSectionTitle, { marginTop: 16 }]}>Category</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 4 }}>
-              {filterChips.map((chip) => (
-                <TouchableOpacity
-                  key={chip.id}
-                  style={[st.modalPill, selectedCategoryId === chip.id && st.modalPillActive]}
-                  activeOpacity={0.85}
-                  onPress={() => setSelectedCategoryId(chip.id)}
-                >
-                  <Text style={[st.modalPillText, selectedCategoryId === chip.id && st.modalPillTextActive]}>{chip.name}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            {/* Apply button */}
-            <TouchableOpacity style={st.applyBtn} activeOpacity={0.85} onPress={() => setShowFilterModal(false)}>
-              <LinearGradient colors={['#575E7C', '#D5DBFF']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={st.applyBtnGrad}>
-                <Text style={st.applyBtnText}>Apply</Text>
-              </LinearGradient>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -431,22 +313,14 @@ const st = StyleSheet.create({
     backgroundColor: '#A83836',
   },
 
-  /* pills — fixed container so they don't get clipped */
-  pillsContainer: {
-    backgroundColor: '#fff',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#EEF1F4',
-  },
-  pillsRow: { paddingHorizontal: SIDE_PAD, gap: 8, alignItems: 'center' },
+  /* pills */
+  pillsWrap: { maxHeight: 54, backgroundColor: '#fff' },
+  pillsRow: { paddingHorizontal: SIDE_PAD, paddingVertical: 10, gap: 8 },
   pill: {
     paddingHorizontal: 18,
-    paddingVertical: 10,
+    paddingVertical: 9,
     borderRadius: 999,
     backgroundColor: '#E5E9EB',
-    minHeight: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   pillActive: { backgroundColor: '#2D3335' },
   pillText: {
@@ -455,30 +329,6 @@ const st = StyleSheet.create({
     color: '#2D3335',
   },
   pillTextActive: { color: '#F8F9FA' },
-
-  /* sort indicator */
-  sortIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: SIDE_PAD,
-    paddingVertical: 8,
-    backgroundColor: '#F1F4F5',
-  },
-  sortIndicatorText: {
-    fontSize: 12,
-    fontFamily: FontFamily.bodyMedium,
-    color: '#575E7C',
-  },
-
-  /* promo banner */
-  promoBanner: {
-    height: 140,
-    width: SCREEN_WIDTH * 0.75,
-    borderRadius: 16,
-    overflow: 'hidden',
-    backgroundColor: '#F1F4F5',
-  },
 
   /* product grid */
   listContent: { paddingHorizontal: SIDE_PAD, paddingTop: 16, paddingBottom: 80 },
@@ -569,85 +419,9 @@ const st = StyleSheet.create({
     color: '#fff',
   },
 
-  /* Modal */
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingHorizontal: 24,
-    paddingBottom: 40,
-    paddingTop: 12,
-    maxHeight: '80%',
-  },
-  modalHandle: {
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: '#E5E9EB',
-    alignSelf: 'center',
-    marginBottom: 16,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontFamily: FontFamily.headingExtra,
-    color: '#2D3335',
-    marginBottom: 20,
-  },
-  modalSectionTitle: {
-    fontSize: 14,
-    fontFamily: FontFamily.headingSemiBold,
-    color: '#5A6062',
-    marginBottom: 10,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  sortOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    marginBottom: 4,
-    backgroundColor: '#F8F9FA',
-  },
-  sortOptionActive: { backgroundColor: '#F1F4F5', borderWidth: 1, borderColor: '#D5DBFF' },
-  sortOptionText: { fontSize: 15, fontFamily: FontFamily.body, color: '#2D3335' },
-  sortOptionTextActive: { fontFamily: FontFamily.headingSemiBold, color: '#575E7C' },
-  modalPill: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 999,
-    backgroundColor: '#E5E9EB',
-    minHeight: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalPillActive: { backgroundColor: '#2D3335' },
-  modalPillText: { fontSize: 13, fontFamily: FontFamily.headingSemiBold, color: '#2D3335' },
-  modalPillTextActive: { color: '#F8F9FA' },
-  applyBtn: { marginTop: 24, borderRadius: 14, overflow: 'hidden' },
-  applyBtnGrad: { paddingVertical: 16, alignItems: 'center', borderRadius: 14 },
-  applyBtnText: { fontSize: 16, fontFamily: FontFamily.heading, color: '#fff' },
-
-  /* loading / empty */
-  centerWrap: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 30,
-  },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 15,
-    fontFamily: FontFamily.bodyMedium,
-    color: '#5A6062',
-  },
+  /* states */
+  centerWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  loadingText: { marginTop: 12, fontSize: 15, fontFamily: FontFamily.bodyMedium, color: '#5A6062' },
   emptyIconWrap: {
     width: 80,
     height: 80,
@@ -657,15 +431,6 @@ const st = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 16,
   },
-  emptyTitle: {
-    fontSize: 18,
-    fontFamily: FontFamily.headingExtra,
-    color: '#2D3335',
-    marginBottom: 6,
-  },
-  emptySub: {
-    fontSize: 14,
-    fontFamily: FontFamily.body,
-    color: '#5A6062',
-  },
+  emptyTitle: { fontSize: 20, fontFamily: FontFamily.headingExtra, color: '#2D3335', marginBottom: 6 },
+  emptySub: { fontSize: 14, fontFamily: FontFamily.body, color: '#5A6062', textAlign: 'center' },
 });

@@ -1,0 +1,58 @@
+import { FontFamily } from '@/constants/theme';
+import { Ionicons } from '@expo/vector-icons';
+import React from 'react';
+import { StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+export default function WishlistScreen() {
+  return (
+    <SafeAreaView style={st.safe} edges={['top']}>
+      <View style={st.header}>
+        <Text style={st.title}>Wishlist</Text>
+      </View>
+      <View style={st.center}>
+        <View style={st.iconCircle}>
+          <Ionicons name="heart-outline" size={48} color="#E1C4F4" />
+        </View>
+        <Text style={st.emptyTitle}>Your Wishlist Is Empty</Text>
+        <Text style={st.emptyText}>
+          Items you love will appear here. Browse our collection and tap the heart icon to save them.
+        </Text>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const st = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: '#F8F9FA' },
+  header: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 4 },
+  title: { fontSize: 26, fontFamily: FontFamily.headingExtra, color: '#2D3335' },
+  center: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 40,
+  },
+  iconCircle: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: '#F1F4F5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontFamily: FontFamily.headingExtra,
+    color: '#2D3335',
+    marginBottom: 8,
+  },
+  emptyText: {
+    fontSize: 14,
+    fontFamily: FontFamily.body,
+    color: '#5A6062',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+});

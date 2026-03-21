@@ -1,0 +1,343 @@
+import { FontFamily } from '@/constants/theme';
+import { getSession } from '@/lib/auth';
+import { getOuiAssetUrl, getSellerProducts, type OuiSellerProduct } from '@/lib/ouiApi';
+import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Dimensions,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const SIDE_PAD = 20;
+const CARD_GAP = 12;
+const CARD_W = (SCREEN_WIDTH - SIDE_PAD * 2 - CARD_GAP) / 2;
+
+type ClothType = 'upper' | 'lower' | 'overall';
+type UiItem = {
+  id: string;
+  name: string;
+  price: string;
+  cloth_type: ClothType;
+  image: string;
+};
+
+function inferClothType(p: OuiSellerProduct): ClothType {
+  const t = p.cloth_type?.toLowerCase();
+  if (t === 'upper' || t === 'lower' || t === 'overall') return t;
+  const cat = p.category?.name?.toLowerCase() ?? '';
+  if (cat.includes('dress')) return 'overall';
+  if (cat.includes('pant') || cat.includes('jeans') || cat.includes('lower')) return 'lower';
+  return 'upper';
+}
+
+function capitalize(s: string): string {
+  return s.split(' ').map((w) => (w.length ? w[0].toUpperCase() + w.slice(1).toLowerCase() : '')).join(' ');
+}
+
+export default function WishlistScreen() {
+  const router = useRouter();
+  const [products, setProducts] = useState<OuiSellerProduct[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const session = await getSession();
+        if (!mounted || !session?.user?.id) return;
+        const res = await getSellerProducts({
+          sellerId: session.user.id,
+          page: 1,
+          perPage: 40,
+          accessToken: session.accessToken ?? null,
+        });
+        if (mounted) setProducts(res?.products?.filter((p) => p?.id != null) ?? []);
+      } catch {
+        if (mounted) setProducts([]);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  const recommendations: UiItem[] = useMemo(() => {
+    return products
+      .slice(0, 6)
+      .map((p) => {
+        const name = (p.name ?? '').trim();
+        if (!name) return null;
+        const img = p.thumb_image ?? p.image;
+        const imageUrl = typeof img === 'string' ? (img.startsWith('http') ? img : getOuiAssetUrl(img)) : null;
+        if (!imageUrl) return null;
+        const ep = p.offer_price ?? p.price;
+        return {
+          id: String(p.id),
+          name,
+          price: typeof ep === 'number' ? `₹${ep}` : '',
+          cloth_type: inferClothType(p),
+          image: imageUrl,
+        };
+      })
+      .filter((x): x is UiItem => x != null);
+  }, [products]);
+
+  const onItemPress = useCallback(
+    (item: UiItem) => {
+      router.push({
+        pathname: '/product-details',
+        params: { productId: item.id, productName: item.name, productImage: item.image, productPrice: item.price, clothType: item.cloth_type },
+      } as any);
+    },
+    [router],
+  );
+
+  return (
+    <SafeAreaView style={st.safe} edges={['top']}>
+      <View style={st.header}>
+        <Text style={st.headerTitle}>My Curations</Text>
+      </View>
+
+      <ScrollView contentContainerStyle={st.scroll} showsVerticalScrollIndicator={false}>
+        {/* Style Match Card */}
+        <TouchableOpacity style={st.styleMatchCard} activeOpacity={0.9} onPress={() => router.push('/(tabs)/search' as any)}>
+          <LinearGradient
+            colors={['#575E7C', '#D5DBFF']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={st.styleMatchGradient}
+          >
+            <View style={st.styleMatchIconWrap}>
+              <Ionicons name="sparkles" size={24} color="#fff" />
+            </View>
+            <View style={st.styleMatchTextWrap}>
+              <Text style={st.styleMatchTitle}>Style Match</Text>
+              <Text style={st.styleMatchSub}>Discover pieces curated for your taste</Text>
+            </View>
+            <Ionicons name="arrow-forward" size={18} color="rgba(255,255,255,0.7)" />
+          </LinearGradient>
+        </TouchableOpacity>
+
+        {/* Saved Items – empty state */}
+        <View style={st.section}>
+          <Text style={st.sectionTitle}>Saved Items</Text>
+          <View style={st.emptyState}>
+            <View style={st.emptyIconWrap}>
+              <Ionicons name="heart-outline" size={40} color="#E1C4F4" />
+            </View>
+            <Text style={st.emptyTitle}>No saved items yet</Text>
+            <Text style={st.emptyText}>
+              Tap the heart icon on any product to save it to your curations.
+            </Text>
+            <TouchableOpacity
+              style={st.exploreBtnOuter}
+              activeOpacity={0.85}
+              onPress={() => router.push('/products' as any)}
+            >
+              <LinearGradient colors={['#575E7C', '#D5DBFF']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={st.exploreBtn}>
+                <Text style={st.exploreBtnText}>Explore Collection</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Atelier Recommendations */}
+        {loading ? (
+          <View style={st.loadingWrap}>
+            <ActivityIndicator size="small" color="#2D3335" />
+          </View>
+        ) : recommendations.length > 0 ? (
+          <View style={st.section}>
+            <View style={st.sectionHeaderRow}>
+              <Text style={st.sectionTitle}>Atelier Recommendations</Text>
+              <TouchableOpacity onPress={() => router.push('/products' as any)} activeOpacity={0.8}>
+                <Text style={st.viewAll}>View All ›</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={st.recsGrid}>
+              {recommendations.map((item) => (
+                <TouchableOpacity key={item.id} activeOpacity={0.9} onPress={() => onItemPress(item)} style={{ width: CARD_W }}>
+                  <View style={[st.recImgWrap, { width: CARD_W, height: CARD_W * 1.25 }]}>
+                    <Image source={{ uri: item.image }} style={StyleSheet.absoluteFillObject} contentFit="cover" />
+                    <TouchableOpacity style={st.recHeart} activeOpacity={0.8}>
+                      <Ionicons name="heart-outline" size={16} color="#2D3335" />
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={st.recBrand}>OUI ATELIER</Text>
+                  <Text style={st.recName} numberOfLines={1}>{capitalize(item.name)}</Text>
+                  <Text style={st.recPrice}>{item.price}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        ) : null}
+
+        <View style={{ height: 30 }} />
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const st = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: '#F8F9FA' },
+  scroll: { paddingBottom: 30 },
+
+  /* header */
+  header: { paddingHorizontal: SIDE_PAD, paddingTop: 12, paddingBottom: 8 },
+  headerTitle: { fontSize: 26, fontFamily: FontFamily.headingExtra, color: '#2D3335' },
+
+  /* style match card */
+  styleMatchCard: {
+    marginHorizontal: SIDE_PAD,
+    marginTop: 12,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  styleMatchGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 20,
+    gap: 14,
+  },
+  styleMatchIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  styleMatchTextWrap: { flex: 1 },
+  styleMatchTitle: {
+    fontSize: 17,
+    fontFamily: FontFamily.heading,
+    color: '#fff',
+  },
+  styleMatchSub: {
+    fontSize: 12,
+    fontFamily: FontFamily.body,
+    color: 'rgba(255,255,255,0.75)',
+    marginTop: 2,
+  },
+
+  /* section */
+  section: { paddingHorizontal: SIDE_PAD, marginTop: 24 },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontFamily: FontFamily.headingExtra,
+    color: '#2D3335',
+    marginBottom: 12,
+  },
+  viewAll: {
+    fontSize: 13,
+    fontFamily: FontFamily.headingSemiBold,
+    color: '#575E7C',
+    marginBottom: 12,
+  },
+
+  /* empty state */
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 32,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#EEF1F4',
+    paddingHorizontal: 20,
+  },
+  emptyIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#F1F4F5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  emptyTitle: {
+    fontSize: 17,
+    fontFamily: FontFamily.headingExtra,
+    color: '#2D3335',
+    marginBottom: 6,
+  },
+  emptyText: {
+    fontSize: 13,
+    fontFamily: FontFamily.body,
+    color: '#5A6062',
+    textAlign: 'center',
+    lineHeight: 19,
+    marginBottom: 20,
+  },
+  exploreBtnOuter: { borderRadius: 12, overflow: 'hidden' },
+  exploreBtn: {
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  exploreBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontFamily: FontFamily.heading,
+  },
+
+  /* recommendations grid */
+  recsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: CARD_GAP,
+  },
+  recImgWrap: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: '#F1F4F5',
+  },
+  recHeart: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(255,255,255,0.85)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recBrand: {
+    fontSize: 9,
+    fontFamily: FontFamily.bodySemiBold,
+    color: '#9BA1A6',
+    letterSpacing: 1.5,
+    marginTop: 8,
+  },
+  recName: {
+    fontSize: 13,
+    fontFamily: FontFamily.headingSemiBold,
+    color: '#2D3335',
+    marginTop: 2,
+  },
+  recPrice: {
+    fontSize: 14,
+    fontFamily: FontFamily.bodyBold,
+    color: '#575E7C',
+    marginTop: 2,
+  },
+
+  /* loading */
+  loadingWrap: { padding: 40, alignItems: 'center' },
+});

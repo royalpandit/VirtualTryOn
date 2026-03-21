@@ -1,6 +1,5 @@
-import { FontFamily } from '@/constants/theme';
+import { Colors, FontFamily } from '@/constants/theme';
 import { useKioskCart } from '@/context/KioskCartContext';
-import { useWishlist } from '@/context/WishlistContext';
 import { getSession } from '@/lib/auth';
 import {
   getBannerImageUrl,
@@ -12,19 +11,19 @@ import {
   type OuiCategory,
   type OuiSellerProduct,
 } from '@/lib/ouiApi';
-import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Dimensions,
-  FlatList,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -74,7 +73,6 @@ function Pill({ label, active, onPress }: { label: string; active: boolean; onPr
   );
 }
 
-/* Banner carousel with true infinite loop and spacing */
 function BannerCarousel({
   banners,
   onShopNow,
@@ -82,74 +80,42 @@ function BannerCarousel({
   banners: (OuiBannerItem & { imageUrl: string })[];
   onShopNow: () => void;
 }) {
-  const flatRef = useRef<FlatList>(null);
-  const idxRef = useRef(1); // start at first real item (index 1 in extended array)
+  const scrollRef = useRef<ScrollView>(null);
+  const idxRef = useRef(0);
   const [active, setActive] = useState(0);
-  const BANNER_GAP = 12;
   const PAGE_W = SCREEN_WIDTH - SIDE_PAD * 2;
-  const SNAP_W = PAGE_W + BANNER_GAP;
-  const isScrolling = useRef(false);
 
-  // Create extended data: [last, ...originals, first] for seamless looping
-  const extendedBanners = useMemo(() => {
-    if (banners.length <= 1) return banners;
-    return [banners[banners.length - 1], ...banners, banners[0]];
-  }, [banners]);
-
-  // Auto-scroll
   useEffect(() => {
     if (banners.length <= 1) return;
     const id = setInterval(() => {
-      if (isScrolling.current) return;
-      const next = idxRef.current + 1;
+      const next = (idxRef.current + 1) % banners.length;
       idxRef.current = next;
-      flatRef.current?.scrollToOffset({ offset: next * SNAP_W, animated: true });
+      setActive(next);
+      scrollRef.current?.scrollTo({ x: next * PAGE_W, animated: true });
     }, 3500);
     return () => clearInterval(id);
-  }, [banners.length, SNAP_W]);
-
-  const onScrollEnd = useCallback((e: any) => {
-    if (banners.length <= 1) return;
-    const x = e.nativeEvent.contentOffset.x;
-    const idx = Math.round(x / SNAP_W);
-    idxRef.current = idx;
-    // If scrolled to clone of last (index 0) → jump to real last
-    if (idx <= 0) {
-      flatRef.current?.scrollToOffset({ offset: banners.length * SNAP_W, animated: false });
-      idxRef.current = banners.length;
-    }
-    // If scrolled to clone of first (index len+1) → jump to real first
-    else if (idx >= banners.length + 1) {
-      flatRef.current?.scrollToOffset({ offset: 1 * SNAP_W, animated: false });
-      idxRef.current = 1;
-    }
-    // Map extended index to real index
-    const realIdx = ((idxRef.current - 1) % banners.length + banners.length) % banners.length;
-    setActive(realIdx);
-    isScrolling.current = false;
-  }, [banners.length, SNAP_W]);
+  }, [banners.length, PAGE_W]);
 
   if (!banners.length) return null;
 
   return (
     <View style={st.bannerWrap}>
-      <FlatList
-        ref={flatRef}
-        data={extendedBanners}
+      <ScrollView
+        ref={scrollRef}
         horizontal
-        pagingEnabled={false}
-        snapToInterval={SNAP_W}
-        decelerationRate="fast"
+        pagingEnabled
         showsHorizontalScrollIndicator={false}
-        onScrollBeginDrag={() => { isScrolling.current = true; }}
-        onMomentumScrollEnd={onScrollEnd}
-        contentContainerStyle={{ paddingHorizontal: 0 }}
-        initialScrollIndex={banners.length > 1 ? 1 : 0}
-        getItemLayout={(_, index) => ({ length: SNAP_W, offset: SNAP_W * index, index })}
-        keyExtractor={(_, i) => `banner-${i}`}
-        renderItem={({ item: b }) => (
-          <TouchableOpacity activeOpacity={0.95} onPress={onShopNow} style={{ width: PAGE_W, marginRight: BANNER_GAP }}>
-            <View style={[st.bannerCard, { width: PAGE_W }]}>  
+        onMomentumScrollEnd={(e) => {
+          const idx = Math.round(e.nativeEvent.contentOffset.x / PAGE_W);
+          idxRef.current = idx;
+          setActive(idx);
+        }}
+        style={{ width: PAGE_W }}
+        contentContainerStyle={{ width: PAGE_W * banners.length }}
+      >
+        {banners.map((b) => (
+          <TouchableOpacity key={b.id} activeOpacity={0.95} onPress={onShopNow} style={{ width: PAGE_W }}>
+            <View style={[st.bannerCard, { width: PAGE_W }]}>
               <Image source={{ uri: b.imageUrl }} style={StyleSheet.absoluteFillObject} contentFit="cover" />
               <LinearGradient colors={['transparent', 'rgba(0,0,0,0.65)']} style={st.bannerGradient}>
                 <Text style={st.bannerTitle} numberOfLines={2}>
@@ -161,8 +127,8 @@ function BannerCarousel({
               </LinearGradient>
             </View>
           </TouchableOpacity>
-        )}
-      />
+        ))}
+      </ScrollView>
       {banners.length > 1 && (
         <View style={st.dotsRow}>
           {banners.map((_, i) => (
@@ -179,45 +145,41 @@ function ProductCard({
   width,
   onPress,
   onAddToCart,
-  onHeartPress,
-  isWished,
+  showHeart,
 }: {
   item: UiClothItem;
   width: number;
   onPress: () => void;
   onAddToCart?: () => void;
-  onHeartPress?: () => void;
-  isWished?: boolean;
+  showHeart?: boolean;
 }) {
   return (
     <TouchableOpacity activeOpacity={0.9} onPress={onPress} style={[st.productCard, { width }]}>
       <View style={[st.productImgWrap, { width, height: width * 1.25 }]}>
         <Image source={{ uri: item.image }} style={StyleSheet.absoluteFillObject} contentFit="cover" />
-        {onHeartPress && (
-          <TouchableOpacity
-            style={st.heartBtn}
-            activeOpacity={0.8}
-            onPress={(e) => { e.stopPropagation?.(); onHeartPress(); }}
-          >
-            <Ionicons name={isWished ? 'heart' : 'heart-outline'} size={18} color={isWished ? '#A83836' : '#2D3335'} />
+        {showHeart && (
+          <TouchableOpacity style={st.heartBtn} activeOpacity={0.8}>
+            <Ionicons name="heart-outline" size={18} color="#2D3335" />
           </TouchableOpacity>
         )}
         {onAddToCart && (
           <TouchableOpacity
             style={st.cartBtnOverlay}
             activeOpacity={0.8}
-            onPress={(e) => { e.stopPropagation?.(); onAddToCart(); }}
+            onPress={(e) => {
+              e.stopPropagation?.();
+              onAddToCart();
+            }}
           >
             <Ionicons name="bag-outline" size={16} color="#fff" />
           </TouchableOpacity>
         )}
       </View>
       <View style={st.productMeta}>
-        <Text style={st.productName} numberOfLines={1}>{capitalize(item.name)}</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <Text style={st.productPrice}>{item.price}</Text>
-          {item.originalPrice && <Text style={st.productOrigPrice}>{item.originalPrice}</Text>}
-        </View>
+        <Text style={st.productName} numberOfLines={1}>
+          {capitalize(item.name)}
+        </Text>
+        <Text style={st.productPrice}>{item.price}</Text>
       </View>
     </TouchableOpacity>
   );
@@ -271,6 +233,7 @@ function AtelierSection({
   const shown = items.slice(0, 4);
   return (
     <View style={st.atelierSection}>
+      <Text style={st.atelierTitle}>The Atelier</Text>
       <Text style={st.atelierSubtitle}>Handcrafted elegance for the modern connoisseur</Text>
       {shown.map((item, idx) => {
         const isReverse = idx % 2 === 1;
@@ -298,7 +261,7 @@ function AtelierSection({
   );
 }
 
-function FeaturedItem({ item, onPress, onAddToCart }: { item: UiClothItem; onPress: () => void; onAddToCart: () => void }) {
+function FeaturedItem({ item, onPress }: { item: UiClothItem; onPress: () => void }) {
   return (
     <TouchableOpacity activeOpacity={0.9} onPress={onPress} style={st.featuredCard}>
       <View style={st.featuredImgWrap}>
@@ -310,16 +273,14 @@ function FeaturedItem({ item, onPress, onAddToCart }: { item: UiClothItem; onPre
       <View style={st.featuredMeta}>
         <Text style={st.featuredName}>{capitalize(item.name)}</Text>
         <Text style={st.featuredPrice}>{item.price}</Text>
-        <TouchableOpacity activeOpacity={0.85} onPress={(e) => { e.stopPropagation?.(); onAddToCart(); }}>
-          <LinearGradient
-            colors={['#575E7C', '#D5DBFF']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={st.featuredBtn}
-          >
-            <Text style={st.featuredBtnText}>Add To Cart</Text>
-          </LinearGradient>
-        </TouchableOpacity>
+        <LinearGradient
+          colors={['#575E7C', '#D5DBFF']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={st.featuredBtn}
+        >
+          <Text style={st.featuredBtnText}>Add To Cart</Text>
+        </LinearGradient>
       </View>
     </TouchableOpacity>
   );
@@ -349,50 +310,11 @@ function BottomCategoryGrid({ onCategoryPress }: { onCategoryPress: (name: strin
   );
 }
 
-/* Horizontal product row with smooth scroll navigation */
-function HorizontalProductRow({
-  items,
-  onItemPress,
-  onAddToCart,
-  onHeartPress,
-  isWished,
-  cardWidth,
-}: {
-  items: UiClothItem[];
-  onItemPress: (item: UiClothItem) => void;
-  onAddToCart?: (item: UiClothItem) => void;
-  onHeartPress?: (item: UiClothItem) => void;
-  isWished?: (id: string) => boolean;
-  cardWidth: number;
-}) {
-  if (items.length === 0) return null;
-  return (
-    <FlatList
-      data={items}
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      keyExtractor={(it) => it.id}
-      contentContainerStyle={{ paddingHorizontal: SIDE_PAD, gap: 12 }}
-      renderItem={({ item }) => (
-        <ProductCard
-          item={item}
-          width={cardWidth}
-          onPress={() => onItemPress(item)}
-          onAddToCart={onAddToCart ? () => onAddToCart(item) : undefined}
-          onHeartPress={onHeartPress ? () => onHeartPress(item) : undefined}
-          isWished={isWished ? isWished(item.id) : false}
-        />
-      )}
-    />
-  );
-}
-
 /* ─────────── MAIN HOME SCREEN ─────────── */
 
 export default function HomeScreen() {
   const router = useRouter();
   const { addToCart, itemCount } = useKioskCart();
-  const { isWished, toggle: toggleWishlist } = useWishlist();
 
   const [loading, setLoading] = useState(true);
   const [sellerId, setSellerId] = useState<number | null>(null);
@@ -430,7 +352,9 @@ export default function HomeScreen() {
         if (mounted) setLoading(false);
       }
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [router]);
 
   useEffect(() => {
@@ -452,7 +376,9 @@ export default function HomeScreen() {
         if (mounted) setProducts([]);
       }
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [sellerId]);
 
   useEffect(() => {
@@ -467,7 +393,9 @@ export default function HomeScreen() {
         if (mounted) setBanners([]);
       }
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [sellerId]);
 
   /* ─── derived data ─── */
@@ -551,12 +479,12 @@ export default function HomeScreen() {
 
   /* ─── callbacks ─── */
 
-  const onProductPress = useCallback(
+  const onClothPress = useCallback(
     (item: UiClothItem) => {
       router.push({
-        pathname: '/product-details',
-        params: { productId: item.id, productName: item.name, productImage: item.image, productPrice: item.price, clothType: item.cloth_type },
-      } as any);
+        pathname: '/try-on',
+        params: { clothId: item.id, clothName: item.name, clothType: item.cloth_type, clothImageUrl: item.image },
+      });
     },
     [router],
   );
@@ -583,7 +511,6 @@ export default function HomeScreen() {
 
   const CARD_GAP = 12;
   const CARD_W = (SCREEN_WIDTH - SIDE_PAD * 2 - CARD_GAP) / 2;
-  const HORIZ_CARD_W = CARD_W * 0.85;
 
   /* ─── render ─── */
 
@@ -627,7 +554,7 @@ export default function HomeScreen() {
 
         {!loading && (
           <>
-            {/* ─── Banner Carousel (loops infinitely with spacing) ─── */}
+            {/* ─── Banner Carousel ─── */}
             <BannerCarousel banners={heroBanners} onShopNow={handleShopNow} />
 
             {/* ─── Category Pills ─── */}
@@ -653,14 +580,17 @@ export default function HomeScreen() {
             {visibleProducts.length > 0 && (
               <View style={st.section}>
                 <SectionHeader title="All Products" onViewAll={handleViewAll} />
-                <HorizontalProductRow
-                  items={visibleProducts.slice(0, 10)}
-                  onItemPress={onProductPress}
-                  onAddToCart={handleAddToCart}
-                  onHeartPress={(item) => toggleWishlist(item.id)}
-                  isWished={isWished}
-                  cardWidth={HORIZ_CARD_W}
-                />
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={st.horizScroll}>
+                  {visibleProducts.slice(0, 10).map((item) => (
+                    <ProductCard
+                      key={item.id}
+                      item={item}
+                      width={CARD_W * 0.85}
+                      onPress={() => onClothPress(item)}
+                      onAddToCart={() => handleAddToCart(item)}
+                    />
+                  ))}
+                </ScrollView>
               </View>
             )}
 
@@ -678,13 +608,21 @@ export default function HomeScreen() {
                         } as any)
                       }
                     />
-                    <HorizontalProductRow
-                      items={sec.items.slice(0, 10)}
-                      onItemPress={onProductPress}
-                      onHeartPress={(item) => toggleWishlist(item.id)}
-                      isWished={isWished}
-                      cardWidth={HORIZ_CARD_W}
-                    />
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={st.horizScroll}
+                    >
+                      {sec.items.slice(0, 10).map((item) => (
+                        <ProductCard
+                          key={item.id}
+                          item={item}
+                          width={CARD_W * 0.85}
+                          onPress={() => onClothPress(item)}
+                          showHeart
+                        />
+                      ))}
+                    </ScrollView>
                   </View>
 
                   {idx === 0 && (
@@ -706,65 +644,16 @@ export default function HomeScreen() {
                 </React.Fragment>
               ))}
 
-            {/* ─── Virtual Try-On CTA ─── */}
-            {selectedCategoryId === 'all' && (
-              <TouchableOpacity
-                style={st.tryOnBanner}
-                activeOpacity={0.9}
-                onPress={() => {
-                  if (uiItems.length > 0) {
-                    router.push({
-                      pathname: '/try-on',
-                      params: { clothId: uiItems[0].id, clothName: uiItems[0].name, clothType: uiItems[0].cloth_type, clothImageUrl: uiItems[0].image },
-                    });
-                  }
-                }}
-              >
-                <LinearGradient colors={['#2D3335', '#575E7C']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={st.tryOnBannerGrad}>
-                  <View style={st.tryOnBannerLeft}>
-                    <View style={st.tryOnIconWrap}>
-                      <Ionicons name="camera-outline" size={24} color="#D5DBFF" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={st.tryOnBannerTitle}>Virtual Try-On</Text>
-                      <Text style={st.tryOnBannerSub}>See how outfits look on you instantly</Text>
-                    </View>
-                  </View>
-                  <View style={st.tryOnArrow}>
-                    <Ionicons name="arrow-forward" size={18} color="#fff" />
-                  </View>
-                </LinearGradient>
-              </TouchableOpacity>
-            )}
-
             {/* ─── The Atelier ─── */}
             {selectedCategoryId === 'all' && uiItems.length > 4 && (
-              <AtelierSection items={uiItems.slice(-4)} onItemPress={onProductPress} />
+              <AtelierSection items={uiItems.slice(-4)} onItemPress={onClothPress} />
             )}
 
             {/* ─── Featured Item ─── */}
             {uiItems.length > 0 && (
               <View style={st.section}>
                 <SectionHeader title="Featured Item" />
-                <FeaturedItem
-                  item={uiItems[0]}
-                  onPress={() => onProductPress(uiItems[0])}
-                  onAddToCart={() => handleAddToCart(uiItems[0])}
-                />
-              </View>
-            )}
-
-            {/* ─── Trending Now ─── */}
-            {uiItems.length > 6 && selectedCategoryId === 'all' && (
-              <View style={st.section}>
-                <SectionHeader title="Trending Now" onViewAll={handleViewAll} />
-                <HorizontalProductRow
-                  items={uiItems.slice(4, 12)}
-                  onItemPress={onProductPress}
-                  onHeartPress={(item) => toggleWishlist(item.id)}
-                  isWished={isWished}
-                  cardWidth={HORIZ_CARD_W}
-                />
+                <FeaturedItem item={uiItems[0]} onPress={() => onClothPress(uiItems[0])} />
               </View>
             )}
 
@@ -778,27 +667,12 @@ export default function HomeScreen() {
                       key={item.id}
                       item={item}
                       width={CARD_W}
-                      onPress={() => onProductPress(item)}
-                      onHeartPress={() => toggleWishlist(item.id)}
-                      isWished={isWished(item.id)}
+                      onPress={() => onClothPress(item)}
+                      showHeart
                     />
                   ))}
                 </View>
               </View>
-            )}
-
-            {/* ─── Collections CTA ─── */}
-            {selectedCategoryId === 'all' && (
-              <TouchableOpacity activeOpacity={0.9} onPress={() => router.push('/collections' as any)} style={st.collectionsCTA}>
-                <LinearGradient colors={['#6D567E', '#E1C4F4']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={st.collectionsCTAGrad}>
-                  <Ionicons name="diamond-outline" size={28} color="#fff" />
-                  <Text style={st.collectionsCTATitle}>Explore Collections</Text>
-                  <Text style={st.collectionsCTASub}>Curated looks from Premium Store</Text>
-                  <View style={st.collectionsCTABtn}>
-                    <Text style={st.collectionsCTABtnText}>View Collections →</Text>
-                  </View>
-                </LinearGradient>
-              </TouchableOpacity>
             )}
 
             {/* ─── Bottom Category Grid ─── */}
@@ -961,13 +835,12 @@ const st = StyleSheet.create({
   pillTextActive: { color: '#F8F9FA' },
 
   /* sections */
-  section: { marginBottom: 20 },
+  section: { marginBottom: 20, paddingHorizontal: SIDE_PAD },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
-    paddingHorizontal: SIDE_PAD,
   },
   sectionTitle: {
     fontSize: 18,
@@ -979,6 +852,7 @@ const st = StyleSheet.create({
     fontFamily: FontFamily.headingSemiBold,
     color: '#575E7C',
   },
+  horizScroll: { gap: 12 },
 
   /* product card */
   productCard: { marginBottom: 4 },
@@ -1010,29 +884,16 @@ const st = StyleSheet.create({
     justifyContent: 'center',
   },
   productMeta: { paddingTop: 8 },
-  productBrand: {
-    fontSize: 9,
-    fontFamily: FontFamily.bodySemiBold,
-    color: '#9BA1A6',
-    letterSpacing: 1.5,
-  },
   productName: {
     fontSize: 13,
     fontFamily: FontFamily.headingSemiBold,
     color: '#2D3335',
     marginBottom: 2,
-    marginTop: 2,
   },
   productPrice: {
     fontSize: 14,
     fontFamily: FontFamily.bodyBold,
     color: '#575E7C',
-  },
-  productOrigPrice: {
-    fontSize: 12,
-    fontFamily: FontFamily.body,
-    color: '#9BA1A6',
-    textDecorationLine: 'line-through',
   },
 
   /* promo */
@@ -1067,30 +928,6 @@ const st = StyleSheet.create({
     color: '#fff',
     fontSize: 13,
     fontFamily: FontFamily.headingSemiBold,
-  },
-
-  /* try-on banner */
-  tryOnBanner: { marginHorizontal: SIDE_PAD, marginBottom: 20, borderRadius: 16, overflow: 'hidden' },
-  tryOnBannerGrad: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 20 },
-  tryOnBannerLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, gap: 14 },
-  tryOnIconWrap: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(213,219,255,0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tryOnBannerTitle: { fontSize: 16, fontFamily: FontFamily.heading, color: '#fff' },
-  tryOnBannerSub: { fontSize: 12, fontFamily: FontFamily.body, color: 'rgba(255,255,255,0.7)', marginTop: 2 },
-  tryOnArrow: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: 12,
   },
 
   /* atelier */
@@ -1165,7 +1002,6 @@ const st = StyleSheet.create({
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: '#EEF1F4',
-    marginHorizontal: SIDE_PAD,
   },
   featuredImgWrap: {
     width: '100%',
@@ -1217,27 +1053,6 @@ const st = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 12,
-    paddingHorizontal: SIDE_PAD,
-  },
-
-  /* collections CTA */
-  collectionsCTA: { marginHorizontal: SIDE_PAD, marginBottom: 20, borderRadius: 20, overflow: 'hidden' },
-  collectionsCTAGrad: { paddingVertical: 30, paddingHorizontal: 24, alignItems: 'center' },
-  collectionsCTATitle: { fontSize: 22, fontFamily: FontFamily.headingExtra, color: '#fff', marginTop: 12 },
-  collectionsCTASub: { fontSize: 13, fontFamily: FontFamily.body, color: 'rgba(255,255,255,0.75)', marginTop: 4 },
-  collectionsCTABtn: {
-    marginTop: 16,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-    paddingHorizontal: 22,
-    paddingVertical: 10,
-    borderRadius: 10,
-  },
-  collectionsCTABtnText: {
-    color: '#fff',
-    fontSize: 14,
-    fontFamily: FontFamily.headingSemiBold,
   },
 
   /* bottom category grid */

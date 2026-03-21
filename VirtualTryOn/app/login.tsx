@@ -1,36 +1,32 @@
+import { FontFamily } from '@/constants/theme';
 import { loginSeller } from '@/lib/auth';
-import { PlayfairDisplay_400Regular, useFonts } from '@expo-google-fonts/playfair-display';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    KeyboardAvoidingView,
-    Platform,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-const DEFAULT_EMAIL = 'seller@gmail.com';
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const DEFAULT_EMAIL = 'bensharma8766@gmail.com';
 const DEFAULT_PASSWORD = '1234';
 
 export default function LoginScreen() {
-  const [fontsLoaded] = useFonts({
-    PlayfairDisplay_400Regular,
-  });
   const router = useRouter();
   const [email, setEmail] = useState(DEFAULT_EMAIL);
   const [password, setPassword] = useState(DEFAULT_PASSWORD);
   const [loading, setLoading] = useState(false);
-
-  const handleSkip = () => {
-    if (loading) return;
-    router.replace('/(tabs)/home' as any);
-  };
 
   const handleSignIn = async () => {
     if (loading) return;
@@ -51,178 +47,295 @@ export default function LoginScreen() {
   };
 
   return (
-    <View style={styles.container}>
-      <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+    <View style={st.container}>
+      {/* Decorative background circles */}
+      <View style={st.bgCircle1} />
+      <View style={st.bgCircle2} />
+      <View style={st.bgCircle3} />
+
+      <SafeAreaView style={st.safe} edges={['top', 'bottom']}>
         <KeyboardAvoidingView
-          style={styles.content}
+          style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
         >
-          <View style={styles.header}>
-            <Text style={[styles.logo, fontsLoaded && styles.logoPlayfair]}>OUI</Text>
-            <Text style={styles.tagline}>THE DIGITAL ATELIER</Text>
-          </View>
+          <ScrollView
+            contentContainerStyle={st.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Brand header */}
+            <View style={st.brandWrap}>
+              <Text style={st.brandText}>OUI</Text>
+              <Text style={st.brandTagline}>THE DIGITAL ATELIER</Text>
+            </View>
 
-          <View style={styles.titleWrap}>
-            <Text style={styles.title}>Sign In</Text>
-            <Text style={styles.subtitle}>Welcome back to your seller dashboard.</Text>
-          </View>
+            {/* Sign In title */}
+            <View style={st.titleWrap}>
+              <Text style={st.title}>Sign In</Text>
+              <Text style={st.subtitle}>Welcome back to your style journey.</Text>
+            </View>
 
-          <View style={styles.form}>
-            <Text style={styles.label}>EMAIL ADDRESS</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="name@atelier.com"
-              placeholderTextColor="#a8adb6"
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={!loading}
-            />
-            <View style={styles.passwordHead}>
-              <Text style={[styles.label, styles.labelTop]}>PASSWORD</Text>
-              <TouchableOpacity style={styles.forgot} onPress={() => Alert.alert('Forgot password', 'Please contact support or use the web portal to reset your password.')}>
-                <Text style={styles.forgotText}>FORGOT PASSWORD?</Text>
+            {/* Form */}
+            <View style={st.form}>
+              <Text style={st.label}>EMAIL ADDRESS</Text>
+              <View style={st.inputWrap}>
+                <TextInput
+                  style={st.input}
+                  placeholder="name@atelier.com"
+                  placeholderTextColor="#9BA1A6"
+                  value={email}
+                  onChangeText={setEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  editable={!loading}
+                />
+              </View>
+
+              <View style={st.passwordHeader}>
+                <Text style={st.label}>PASSWORD</Text>
+                <TouchableOpacity
+                  onPress={() =>
+                    Alert.alert(
+                      'Forgot password',
+                      'Please contact support or use the web portal to reset your password.',
+                    )
+                  }
+                >
+                  <Text style={st.forgotText}>FORGOT PASSWORD?</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={st.inputWrap}>
+                <TextInput
+                  style={st.input}
+                  placeholder="••••••••"
+                  placeholderTextColor="#9BA1A6"
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry
+                  editable={!loading}
+                />
+              </View>
+            </View>
+
+            {/* Sign In Button */}
+            <TouchableOpacity
+              onPress={handleSignIn}
+              activeOpacity={0.85}
+              disabled={loading}
+              style={st.signInBtnOuter}
+            >
+              <LinearGradient
+                colors={['#575E7C', '#D5DBFF']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={st.signInBtn}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={st.signInBtnText}>SIGN IN</Text>
+                )}
+              </LinearGradient>
+            </TouchableOpacity>
+
+            {/* Divider */}
+            <View style={st.dividerRow}>
+              <View style={st.dividerLine} />
+              <Text style={st.dividerText}>EXPERIENCE EXCELLENCE</Text>
+              <View style={st.dividerLine} />
+            </View>
+
+            {/* Sign up link */}
+            <View style={st.signUpRow}>
+              <Text style={st.signUpText}>Don't have an account? </Text>
+              <TouchableOpacity
+                onPress={() =>
+                  Alert.alert(
+                    'Create Account',
+                    'Please visit the web portal or contact support to create a new account.',
+                  )
+                }
+              >
+                <Text style={st.signUpLink}>Sign Up</Text>
               </TouchableOpacity>
             </View>
-            <TextInput
-              style={styles.input}
-              placeholder="••••••••"
-              placeholderTextColor="#a8adb6"
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              editable={!loading}
-            />
-          </View>
-
-          <TouchableOpacity style={[styles.signInButton, loading && styles.signInButtonDisabled]} onPress={handleSignIn} activeOpacity={0.8} disabled={loading}>
-            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.signInText}>Sign in</Text>}
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.skipButton} onPress={handleSkip} activeOpacity={0.8} disabled={loading}>
-          </TouchableOpacity>
+          </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const st = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#17181f',
+    backgroundColor: '#ECEEF3',
   },
-  safe: {
-    flex: 1,
+  safe: { flex: 1 },
+  scrollContent: {
+    flexGrow: 1,
+    paddingHorizontal: 28,
+    paddingTop: 40,
+    paddingBottom: 40,
+    justifyContent: 'center',
   },
-  content: {
-    flex: 1,
-    marginHorizontal: 16,
-    marginVertical: 20,
-    backgroundColor: '#eceef3',
-    borderRadius: 0,
-    paddingHorizontal: 22,
-    paddingTop: 28,
-    paddingBottom: 26,
+
+  /* decorative circles */
+  bgCircle1: {
+    position: 'absolute',
+    width: SCREEN_WIDTH * 0.7,
+    height: SCREEN_WIDTH * 0.7,
+    borderRadius: SCREEN_WIDTH * 0.35,
+    backgroundColor: 'rgba(213,219,255,0.20)',
+    top: -SCREEN_WIDTH * 0.15,
+    right: -SCREEN_WIDTH * 0.2,
   },
-  header: {
+  bgCircle2: {
+    position: 'absolute',
+    width: SCREEN_WIDTH * 0.5,
+    height: SCREEN_WIDTH * 0.5,
+    borderRadius: SCREEN_WIDTH * 0.25,
+    backgroundColor: 'rgba(225,196,244,0.20)',
+    bottom: SCREEN_HEIGHT * 0.12,
+    left: -SCREEN_WIDTH * 0.18,
+  },
+  bgCircle3: {
+    position: 'absolute',
+    width: SCREEN_WIDTH * 0.35,
+    height: SCREEN_WIDTH * 0.35,
+    borderRadius: SCREEN_WIDTH * 0.175,
+    backgroundColor: 'rgba(213,219,255,0.15)',
+    bottom: -SCREEN_WIDTH * 0.08,
+    right: SCREEN_WIDTH * 0.08,
+  },
+
+  /* brand */
+  brandWrap: {
     alignItems: 'center',
+    marginBottom: 36,
+  },
+  brandText: {
+    fontSize: 52,
+    fontFamily: FontFamily.brand,
+    color: '#2D3335',
+    letterSpacing: 4,
+  },
+  brandTagline: {
+    fontSize: 11,
+    fontFamily: FontFamily.body,
+    color: '#5A6062',
+    letterSpacing: 3,
+    marginTop: 4,
+  },
+
+  /* titles */
+  titleWrap: {
     marginBottom: 28,
   },
-  logo: {
-    fontSize: 46,
-    color: '#2d3238',
-    letterSpacing: 1.2,
-    marginBottom: 6,
-  },
-  logoPlayfair: {
-    fontFamily: 'PlayfairDisplay_400Regular',
-  },
-  tagline: {
-    fontSize: 11,
-    color: '#8f939b',
-    letterSpacing: 2.2,
-  },
-  titleWrap: {
-    marginBottom: 22,
-  },
   title: {
-    fontSize: 34,
-    color: '#2b3138',
-    fontWeight: '600',
-    marginBottom: 4,
+    fontSize: 32,
+    fontFamily: FontFamily.headingExtra,
+    color: '#2D3335',
+    marginBottom: 6,
   },
   subtitle: {
     fontSize: 15,
-    color: '#6e7380',
+    fontFamily: FontFamily.body,
+    color: '#5A6062',
   },
+
+  /* form */
   form: {
-    marginBottom: 26,
+    marginBottom: 24,
   },
   label: {
     fontSize: 11,
-    fontWeight: '600',
-    color: '#6c7180',
-    letterSpacing: 1.2,
+    fontFamily: FontFamily.bodySemiBold,
+    color: '#5A6062',
+    letterSpacing: 1.5,
     marginBottom: 8,
   },
-  labelTop: {
-    marginTop: 18,
-  },
-  passwordHead: {
+  passwordHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-  },
-  input: {
-    borderWidth: 0,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    fontSize: 16,
-    color: '#242a32',
-    backgroundColor: '#e2e5ea',
-  },
-  forgot: {
     marginTop: 18,
+    marginBottom: 8,
   },
   forgotText: {
-    fontSize: 10,
-    color: '#697086',
-    fontWeight: '700',
-    letterSpacing: 0.5,
+    fontSize: 11,
+    fontFamily: FontFamily.bodySemiBold,
+    color: '#575E7C',
+    letterSpacing: 1,
   },
-  signInButton: {
-    backgroundColor: '#8e97be',
+  inputWrap: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E5E9EB',
+  },
+  input: {
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 16 : 14,
+    fontSize: 15,
+    fontFamily: FontFamily.body,
+    color: '#2D3335',
+  },
+
+  /* sign-in button */
+  signInBtnOuter: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    marginBottom: 28,
+  },
+  signInBtn: {
     paddingVertical: 16,
-    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    borderRadius: 14,
   },
-  signInButtonDisabled: {
-    opacity: 0.7,
-  },
-  signInText: {
+  signInBtnText: {
     color: '#fff',
     fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 1.2,
+    fontFamily: FontFamily.heading,
+    letterSpacing: 2,
   },
-  skipButton: {
-    alignSelf: 'center',
-    marginTop: 18,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
+
+  /* divider */
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 24,
   },
-  skipText: {
-    color: '#676f85',
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#D5D8DC',
+  },
+  dividerText: {
+    marginHorizontal: 14,
+    fontSize: 10,
+    fontFamily: FontFamily.bodySemiBold,
+    color: '#9BA1A6',
+    letterSpacing: 2,
+  },
+
+  /* sign up */
+  signUpRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  signUpText: {
     fontSize: 14,
-    fontWeight: '600',
+    fontFamily: FontFamily.body,
+    color: '#5A6062',
   },
-  skipTextDisabled: {
-    opacity: 0.6,
+  signUpLink: {
+    fontSize: 14,
+    fontFamily: FontFamily.heading,
+    color: '#575E7C',
+    textDecorationLine: 'underline',
   },
 });
