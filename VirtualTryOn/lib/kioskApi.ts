@@ -14,13 +14,23 @@ export type KioskCartCreateResponse = {
 
 export type KioskCartAddResponse = {
   status: boolean;
-  item: { id: number; cart_id: number; product_id: number; quantity: number };
+  item: {
+    id: number;
+    cart_id: number;
+    product_id: number;
+    quantity: number;
+    sizes?: string[];
+    colors?: string[];
+  };
 };
 
 export type KioskCartItem = {
   id: number;
   product_id: number;
+  variant_id?: number;
   quantity: number;
+  sizes?: string[];
+  colors?: string[];
   name?: string;
   image?: string;
   price?: number;
@@ -51,13 +61,25 @@ export async function kioskCreateCart(vendorId: number, timestamp?: number): Pro
 export async function kioskAddProduct(
   cartUuid: string,
   productId: number,
-  quantity: number = 1
+  quantity: number = 1,
+  options?: { sizes?: string[]; colors?: string[]; variant_id?: number }
 ): Promise<KioskCartAddResponse> {
   const url = `${getBase()}/api/kiosk/cart/add-product`;
+  const body: {
+    cart_uuid: string;
+    product_id: number;
+    quantity: number;
+    variant_id?: number;
+    sizes?: string;
+    colors?: string;
+  } = { cart_uuid: cartUuid, product_id: productId, quantity };
+  if (options?.variant_id != null) body.variant_id = options.variant_id;
+  if (options?.sizes?.length) body.sizes = options.sizes.join(',');
+  if (options?.colors?.length) body.colors = options.colors.join(',');
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ cart_uuid: cartUuid, product_id: productId, quantity }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -67,14 +89,25 @@ export async function kioskAddProduct(
 export async function kioskRemoveProduct(
   cartUuid: string,
   productId: number,
-  quantity?: number
+  quantity?: number,
+  options?: { remove_size?: string; remove_color?: string; variant_id?: number }
 ): Promise<{ code: number; status: string; message: string }> {
   const url = `${getBase()}/api/kiosk/cart/remove-product`;
-  const body: { cart_uuid: string; product_id: number; quantity?: number } = {
+  const body: {
+    cart_uuid: string;
+    product_id: number;
+    quantity?: number;
+    variant_id?: number;
+    remove_size?: string;
+    remove_color?: string;
+  } = {
     cart_uuid: cartUuid,
     product_id: productId,
   };
   if (quantity != null) body.quantity = quantity;
+  if (options?.variant_id != null) body.variant_id = options.variant_id;
+  if (options?.remove_size) body.remove_size = options.remove_size;
+  if (options?.remove_color) body.remove_color = options.remove_color;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -95,19 +128,23 @@ export async function kioskGetCartByToken(token: string): Promise<KioskCartGetRe
   const cart = data?.cart ?? json?.cart;
   const itemsRaw = data?.items ?? json?.items ?? [];
   const itemsList: KioskCartItem[] = Array.isArray(itemsRaw) ? itemsRaw : [];
-  // Some APIs can return same product in multiple rows; merge by product_id so quantity increases in one line.
-  const mergedMap = new Map<number, KioskCartItem>();
+  // Merge duplicate rows by product_id + variant_id so the same variant sums quantities in one line,
+  // but different variants of the same product remain as separate cart entries.
+  const mergedMap = new Map<string, KioskCartItem>();
   for (const row of itemsList) {
     const pid = Number((row as any)?.product_id ?? 0);
     if (!pid) continue;
+    const vid = (row as any)?.variant_id != null ? Number((row as any).variant_id) : undefined;
+    const mergeKey = vid != null ? `${pid}_${vid}` : `${pid}`;
     const qty = Number((row as any)?.quantity ?? 1) || 1;
     const price = Number((row as any)?.price ?? 0) || 0;
     const total = Number((row as any)?.total ?? price * qty) || price * qty;
-    const existing = mergedMap.get(pid);
+    const existing = mergedMap.get(mergeKey);
     if (!existing) {
-      mergedMap.set(pid, {
+      mergedMap.set(mergeKey, {
         ...row,
         product_id: pid,
+        variant_id: vid,
         quantity: qty,
         price,
         total,
@@ -115,7 +152,7 @@ export async function kioskGetCartByToken(token: string): Promise<KioskCartGetRe
     } else {
       const mergedQty = Number(existing.quantity ?? 0) + qty;
       const mergedTotal = Number(existing.total ?? 0) + total;
-      mergedMap.set(pid, {
+      mergedMap.set(mergeKey, {
         ...existing,
         quantity: mergedQty,
         total: mergedTotal > 0 ? mergedTotal : (Number(existing.price ?? price) || 0) * mergedQty,
@@ -167,17 +204,20 @@ export type KioskTryonStartResponse = {
 export async function kioskTryonStart(
   cartId: number,
   productId: number,
-  generatedImagePath: string
+  generatedImagePath: string,
+  variantId?: number
 ): Promise<KioskTryonStartResponse> {
   const url = `${getBase()}/api/kiosk/tryon/start`;
+  const body: { cart_id: number; product_id: number; generated_image: string; variant_id?: number } = {
+    cart_id: cartId,
+    product_id: productId,
+    generated_image: generatedImagePath,
+  };
+  if (variantId != null) body.variant_id = variantId;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({
-      cart_id: cartId,
-      product_id: productId,
-      generated_image: generatedImagePath,
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -203,6 +243,73 @@ export type KioskTryonViewResponse = {
 export async function kioskTryonView(token: string): Promise<KioskTryonViewResponse> {
   const url = `${getBase()}/api/kiosk/tryon/${encodeURIComponent(token)}`;
   const res = await fetch(url, { method: 'GET', headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// --- Kiosk Wishlist ---
+
+export type KioskWishlistItem = {
+  id: number;
+  product?: {
+    id: number;
+    name?: string;
+    short_name?: string;
+    slug?: string;
+    thumb_image?: string;
+    price?: number;
+    offer_price?: number;
+  };
+};
+
+export type KioskWishlistListResponse = {
+  code: number;
+  status: string | boolean;
+  data?: {
+    current_page?: number;
+    data?: KioskWishlistItem[];
+    total?: number;
+  };
+};
+
+function withAuthHeaders(accessToken?: string | null, json: boolean = false): Record<string, string> {
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (json) headers['Content-Type'] = 'application/json';
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  return headers;
+}
+
+/** GET /api/kiosk/wishlist - vendor wishlist list */
+export async function kioskWishlistList(accessToken?: string | null): Promise<KioskWishlistListResponse> {
+  const url = `${getBase()}/api/kiosk/wishlist`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: withAuthHeaders(accessToken),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** GET /api/kiosk/wishlist/add/{id}/{variant_id} - add product to vendor wishlist */
+export async function kioskWishlistAdd(productId: number, accessToken?: string | null, variantId?: number): Promise<any> {
+  const vid = variantId != null ? variantId : 0;
+  const url = `${getBase()}/api/kiosk/wishlist/add/${encodeURIComponent(String(productId))}/${encodeURIComponent(String(vid))}`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: withAuthHeaders(accessToken),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** DELETE /api/kiosk/wishlist/remove/{id}/{variant_id} - remove product from vendor wishlist */
+export async function kioskWishlistRemove(productId: number, accessToken?: string | null, variantId?: number): Promise<any> {
+  const vid = variantId != null ? variantId : 0;
+  const url = `${getBase()}/api/kiosk/wishlist/remove/${encodeURIComponent(String(productId))}/${encodeURIComponent(String(vid))}`;
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: withAuthHeaders(accessToken),
+  });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }

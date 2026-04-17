@@ -25,8 +25,16 @@ type CartState = {
 
 type KioskCartContextValue = CartState & {
   itemCount: number;
-  addToCart: (productId: number, quantity?: number) => Promise<void>;
-  removeFromCart: (productId: number, quantity?: number) => Promise<void>;
+  addToCart: (
+    productId: number,
+    quantity?: number,
+    options?: { sizes?: string[]; colors?: string[]; variant_id?: number }
+  ) => Promise<void>;
+  removeFromCart: (
+    productId: number,
+    quantity?: number,
+    options?: { remove_size?: string; remove_color?: string; variant_id?: number }
+  ) => Promise<void>;
   refreshCart: () => Promise<void>;
   ensureCart: () => Promise<string | null>;
   resetCart: () => Promise<void>;
@@ -122,12 +130,16 @@ export function KioskCartProvider({ children }: { children: React.ReactNode }) {
   }, [state.qrToken]);
 
   const addToCart = useCallback(
-    async (productId: number, quantity: number = 1) => {
+    async (
+      productId: number,
+      quantity: number = 1,
+      options?: { sizes?: string[]; colors?: string[]; variant_id?: number }
+    ) => {
       const cartUuid = await ensureCart();
       if (!cartUuid) return;
       setState((s) => ({ ...s, error: null }));
       try {
-        await apiAddProduct(cartUuid, productId, quantity);
+        await apiAddProduct(cartUuid, productId, quantity, options);
         await refreshCart();
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -139,11 +151,15 @@ export function KioskCartProvider({ children }: { children: React.ReactNode }) {
   );
 
   const removeFromCart = useCallback(
-    async (productId: number, quantity?: number) => {
+    async (
+      productId: number,
+      quantity?: number,
+      options?: { remove_size?: string; remove_color?: string; variant_id?: number }
+    ) => {
       if (!state.cartUuid) return;
       setState((s) => ({ ...s, error: null }));
       try {
-        await apiRemoveProduct(state.cartUuid, productId, quantity);
+        await apiRemoveProduct(state.cartUuid, productId, quantity, options);
         await refreshCart();
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

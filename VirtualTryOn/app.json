@@ -50,7 +50,7 @@
       "reactCompiler": true
     },
     "extra": {
-      "API_URL": "https://548b-2405-201-3016-9117-5c08-686b-ec91-421c.ngrok-free.app/api/try-on",
+      "API_URL": "https://1771otllm7rl1o-8000.proxy.runpod.net/api/try-on",
       "OUI_API_BASE_URL": "https://oui.corescent.in",
       "router": {},
       "eas": {

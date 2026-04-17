@@ -30,6 +30,15 @@ function getItemImageUrl(item: KioskCartItem): string | null {
   return getOuiAssetUrl(img) ?? null;
 }
 
+function firstVariant(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    const v = value.find((x) => String(x).trim().length > 0);
+    return v != null ? String(v) : undefined;
+  }
+  if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+  return undefined;
+}
+
 export default function CartScreen() {
   const router = useRouter();
   const {
@@ -95,18 +104,37 @@ export default function CartScreen() {
   const handleRemove = (productId: number) => {
     Alert.alert('Remove item', 'Remove this product from cart?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Remove', style: 'destructive', onPress: () => removeFromCart(productId) },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: () => {
+          const item = items.find((i) => i.product_id === productId);
+          removeFromCart(productId, undefined, {
+            variant_id: item?.variant_id,
+            remove_size: firstVariant(item?.sizes),
+            remove_color: firstVariant(item?.colors),
+          });
+        },
+      },
     ]);
   };
 
   const handleQuantityMinus = async (item: KioskCartItem) => {
     const qty = typeof item.quantity === 'number' ? item.quantity : parseInt(String(item.quantity), 10) || 1;
     if (qty <= 1) { handleRemove(item.product_id); return; }
-    await removeFromCart(item.product_id, 1);
+    await removeFromCart(item.product_id, 1, {
+      variant_id: item.variant_id,
+      remove_size: firstVariant(item.sizes),
+      remove_color: firstVariant(item.colors),
+    });
   };
 
   const handleQuantityPlus = async (item: KioskCartItem) => {
-    await addToCart(item.product_id, 1);
+    await addToCart(item.product_id, 1, {
+      variant_id: item.variant_id,
+      sizes: firstVariant(item.sizes) ? [firstVariant(item.sizes) as string] : undefined,
+      colors: firstVariant(item.colors) ? [firstVariant(item.colors) as string] : undefined,
+    });
   };
 
   return (
@@ -169,7 +197,7 @@ export default function CartScreen() {
               const imageUrl = getItemImageUrl(item);
               const name = item.name || `Product #${item.product_id}`;
               return (
-                <View key={`cart-${index}-${item.product_id}`} style={st.itemCard}>
+                <View key={`cart-${index}-${item.product_id}-${item.variant_id ?? 'base'}`} style={st.itemCard}>
                   <View style={st.itemImgWrap}>
                     {imageUrl ? (
                       <Image source={{ uri: imageUrl }} style={st.itemImg} contentFit="cover" />
@@ -181,6 +209,22 @@ export default function CartScreen() {
                   </View>
                   <View style={st.itemInfo}>
                     <Text style={st.itemName} numberOfLines={2}>{name}</Text>
+                    {((Array.isArray(item.colors) && item.colors.length > 0) || (Array.isArray(item.sizes) && item.sizes.length > 0)) && (
+                      <View style={st.variantTagsRow}>
+                        {Array.isArray(item.colors) && item.colors.filter(Boolean).map((c, ci) => (
+                          <View key={`clr-${ci}`} style={st.variantTag}>
+                            <View style={[st.variantTagDot, { backgroundColor: c.toLowerCase() }]} />
+                            <Text style={st.variantTagText}>{c}</Text>
+                          </View>
+                        ))}
+                        {Array.isArray(item.sizes) && item.sizes.filter(Boolean).map((s, si) => (
+                          <View key={`sz-${si}`} style={st.variantTag}>
+                            <Ionicons name="resize-outline" size={11} color="#575E7C" />
+                            <Text style={st.variantTagText}>{s}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
                     {price > 0 && <Text style={st.itemPrice}>₹{total.toFixed(0)}</Text>}
                     <View style={st.qtyRow}>
                       <View style={st.stepper}>
@@ -361,6 +405,21 @@ const st = StyleSheet.create({
   itemBrand: { fontSize: 9, fontFamily: FontFamily.bodySemiBold, color: '#9BA1A6', letterSpacing: 1.5, marginBottom: 2 },
   itemName: { fontSize: 15, fontFamily: FontFamily.heading, color: '#2D3335', marginBottom: 4 },
   itemPrice: { fontSize: 15, fontFamily: FontFamily.bodyBold, color: '#575E7C', marginBottom: 8 },
+  variantTagsRow: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8,
+  },
+  variantTag: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: '#F1F4F5', paddingHorizontal: 8, paddingVertical: 4,
+    borderRadius: 999,
+  },
+  variantTagDot: {
+    width: 10, height: 10, borderRadius: 5,
+    borderWidth: 1, borderColor: 'rgba(0,0,0,0.12)',
+  },
+  variantTagText: {
+    fontSize: 11, fontFamily: FontFamily.bodySemiBold, color: '#575E7C',
+  },
   qtyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   stepper: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F4F5', borderRadius: 10,

@@ -2,7 +2,7 @@ import { FontFamily } from '@/constants/theme';
 import { useKioskCart } from '@/context/KioskCartContext';
 import { useWishlist } from '@/context/WishlistContext';
 import { getSession } from '@/lib/auth';
-import { getOuiAssetUrl, getSellerProducts, type OuiSellerProduct } from '@/lib/ouiApi';
+import { getOuiAssetUrl, getSellerProducts, type OuiSellerProduct, type OuiVariantItemDetail } from '@/lib/ouiApi';
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -46,6 +46,8 @@ export default function ProductDetailsScreen() {
   const [product, setProduct] = useState<OuiSellerProduct | null>(null);
   const [loading, setLoading] = useState(true);
   const [addingToCart, setAddingToCart] = useState(false);
+  const [selectedColor, setSelectedColor] = useState<string | null>(null);
+  const [selectedSize, setSelectedSize] = useState<string | null>(null);
 
   // Load additional product info
   useEffect(() => {
@@ -69,29 +71,92 @@ export default function ProductDetailsScreen() {
     return () => { mounted = false; };
   }, [productId]);
 
+  // --- Variant logic: color → size flow using varient_item_details ---
+  const variantItems: OuiVariantItemDetail[] = useMemo(() => {
+    return Array.isArray(product?.varient_item_details) ? product.varient_item_details : [];
+  }, [product]);
+
+  // Unique colors (with color_code for swatch display)
+  const availableColors = useMemo(() => {
+    const colorMap = new Map<string, string | undefined>();
+    variantItems.forEach((v) => {
+      if (v.color && v.color.trim()) {
+        const key = v.color.trim();
+        if (!colorMap.has(key)) colorMap.set(key, v.color_code?.trim() || undefined);
+      }
+    });
+    return Array.from(colorMap.entries()).map(([name, code]) => ({ name, code }));
+  }, [variantItems]);
+
+  // Sizes available for the selected color
+  const availableSizes = useMemo(() => {
+    if (!selectedColor) return [] as string[];
+    const sizes = new Set<string>();
+    variantItems.forEach((v) => {
+      if (v.color?.trim() === selectedColor && v.size && v.size.trim()) {
+        sizes.add(v.size.trim());
+      }
+    });
+    return Array.from(sizes);
+  }, [variantItems, selectedColor]);
+
+  // Auto-select first color on load
+  useEffect(() => {
+    if (availableColors.length > 0 && !selectedColor) {
+      setSelectedColor(availableColors[0].name);
+    }
+  }, [availableColors, selectedColor]);
+
+  // When color changes, auto-select first available size
+  useEffect(() => {
+    if (availableSizes.length > 0) {
+      setSelectedSize(availableSizes[0]);
+    } else {
+      setSelectedSize(null);
+    }
+  }, [selectedColor, availableSizes.length]);
+
+  // Find the selected variant item (matching color + size)
+  const selectedVariant: OuiVariantItemDetail | null = useMemo(() => {
+    if (!selectedColor) return null;
+    return variantItems.find((v) =>
+      v.color?.trim() === selectedColor &&
+      (!selectedSize || v.size?.trim() === selectedSize)
+    ) ?? null;
+  }, [variantItems, selectedColor, selectedSize]);
+
+  // Use variant image if available, otherwise fall back to product image
   const mainImage = useMemo(() => {
+    // If variant has its own image, show it
+    if (selectedVariant?.image) {
+      const vImg = selectedVariant.image;
+      return vImg.startsWith('http') ? vImg : getOuiAssetUrl(vImg);
+    }
     if (productImage) return productImage;
     if (!product) return null;
     const img = product.thumb_image ?? product.image;
     if (!img || typeof img !== 'string') return null;
     return img.startsWith('http') ? img : getOuiAssetUrl(img);
-  }, [productImage, product]);
+  }, [productImage, product, selectedVariant]);
 
   const displayName = product?.name ?? productName;
   const displayPrice = useMemo(() => {
     if (product) {
-      const ep = product.offer_price ?? product.price;
-      return typeof ep === 'number' ? `₹${ep}` : productPrice;
+      const basePrice = product.offer_price ?? product.price;
+      const variantDelta = selectedVariant?.price ?? 0;
+      const ep = typeof basePrice === 'number' ? basePrice + variantDelta : null;
+      return ep != null ? `₹${ep}` : productPrice;
     }
     return productPrice;
-  }, [product, productPrice]);
+  }, [product, productPrice, selectedVariant]);
 
   const originalPrice = useMemo(() => {
     if (product?.offer_price != null && product?.price != null && product.offer_price < product.price) {
-      return `₹${product.price}`;
+      const variantDelta = selectedVariant?.price ?? 0;
+      return `₹${product.price + variantDelta}`;
     }
     return null;
-  }, [product]);
+  }, [product, selectedVariant]);
 
   const description = (product as any)?.description || (product as any)?.short_description || null;
 
@@ -99,14 +164,18 @@ export default function ProductDetailsScreen() {
     if (!/^\d+$/.test(productId)) return;
     setAddingToCart(true);
     try {
-      await addToCart(Number(productId), 1);
+      await addToCart(Number(productId), 1, {
+        variant_id: selectedVariant?.id,
+        sizes: selectedSize ? [selectedSize] : undefined,
+        colors: selectedColor ? [selectedColor] : undefined,
+      });
       Alert.alert('Added to Bag', `${displayName} has been added to your shopping bag.`);
     } catch (e) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Could not add to bag');
     } finally {
       setAddingToCart(false);
     }
-  }, [addToCart, productId, displayName]);
+  }, [addToCart, productId, displayName, selectedVariant, selectedSize, selectedColor]);
 
   const handleTryOn = useCallback(() => {
     router.push({
@@ -116,9 +185,10 @@ export default function ProductDetailsScreen() {
         clothName: displayName,
         clothImageUrl: mainImage ?? '',
         clothType,
+        variantId: selectedVariant?.id != null ? String(selectedVariant.id) : undefined,
       },
     });
-  }, [router, productId, displayName, mainImage, clothType]);
+  }, [router, productId, displayName, mainImage, clothType, selectedVariant]);
 
   return (
     <SafeAreaView style={st.safe} edges={['top']}>
@@ -143,7 +213,7 @@ export default function ProductDetailsScreen() {
               <Ionicons name="shirt-outline" size={64} color="#E5E9EB" />
             </View>
           )}
-          <TouchableOpacity style={st.heartFloating} activeOpacity={0.8} onPress={() => toggleWishlist(productId)}>
+          <TouchableOpacity style={st.heartFloating} activeOpacity={0.8} onPress={() => toggleWishlist(productId, selectedVariant?.id)}>
             <Ionicons name={isWished(productId) ? 'heart' : 'heart-outline'} size={20} color={isWished(productId) ? '#A83836' : '#2D3335'} />
           </TouchableOpacity>
         </View>
@@ -160,6 +230,48 @@ export default function ProductDetailsScreen() {
             <Text style={st.description} numberOfLines={4}>
               {description}
             </Text>
+          )}
+
+          {availableColors.length > 0 && (
+            <View style={st.variantBlock}>
+              <Text style={st.variantTitle}>Color</Text>
+              <View style={st.variantRow}>
+                {availableColors.map((clr) => {
+                  const isActive = selectedColor === clr.name;
+                  return (
+                    <TouchableOpacity
+                      key={`color-${clr.name}`}
+                      style={[st.colorChip, isActive && st.colorChipActive]}
+                      activeOpacity={0.85}
+                      onPress={() => setSelectedColor(clr.name)}
+                    >
+                      {clr.code ? (
+                        <View style={[st.colorSwatch, { backgroundColor: clr.code }]} />
+                      ) : null}
+                      <Text style={[st.variantChipText, isActive && st.variantChipTextActive]}>{clr.name}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          )}
+
+          {availableSizes.length > 0 && (
+            <View style={st.variantBlock}>
+              <Text style={st.variantTitle}>Size</Text>
+              <View style={st.variantRow}>
+                {availableSizes.map((sz) => (
+                  <TouchableOpacity
+                    key={`size-${sz}`}
+                    style={[st.variantChip, selectedSize === sz && st.variantChipActive]}
+                    activeOpacity={0.85}
+                    onPress={() => setSelectedSize(sz)}
+                  >
+                    <Text style={[st.variantChipText, selectedSize === sz && st.variantChipTextActive]}>{sz}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
           )}
 
           {/* Virtual Try-On CTA */}
@@ -180,7 +292,7 @@ export default function ProductDetailsScreen() {
 
       {/* Sticky bottom bar */}
       <View style={st.bottomBar}>
-        <TouchableOpacity style={st.wishlistBottomBtn} activeOpacity={0.85} onPress={() => toggleWishlist(productId)}>
+        <TouchableOpacity style={st.wishlistBottomBtn} activeOpacity={0.85} onPress={() => toggleWishlist(productId, selectedVariant?.id)}>
           <Ionicons name={isWished(productId) ? 'heart' : 'heart-outline'} size={22} color={isWished(productId) ? '#A83836' : '#2D3335'} />
         </TouchableOpacity>
         <TouchableOpacity
@@ -312,6 +424,58 @@ const st = StyleSheet.create({
     color: '#5A6062',
     lineHeight: 21,
     marginBottom: 20,
+  },
+  variantBlock: {
+    marginBottom: 16,
+  },
+  variantTitle: {
+    fontSize: 12,
+    fontFamily: FontFamily.bodySemiBold,
+    color: '#5A6062',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  variantRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  variantChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#E5E9EB',
+  },
+  variantChipActive: {
+    backgroundColor: '#2D3335',
+  },
+  variantChipText: {
+    fontSize: 13,
+    fontFamily: FontFamily.headingSemiBold,
+    color: '#2D3335',
+  },
+  variantChipTextActive: {
+    color: '#fff',
+  },
+  colorChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#E5E9EB',
+    gap: 6,
+  },
+  colorChipActive: {
+    backgroundColor: '#2D3335',
+  },
+  colorSwatch: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.15)',
   },
 
   /* try-on card */

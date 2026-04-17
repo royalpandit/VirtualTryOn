@@ -13,7 +13,7 @@ import {
     kioskTryonStart,
     kioskUploadImage,
 } from '@/lib/kioskApi';
-import { getOuiAssetUrl, getSellerProducts, type OuiSellerProduct } from '@/lib/ouiApi';
+import { getOuiAssetUrl, getOuiBaseUrl, getSellerProducts, type OuiSellerProduct } from '@/lib/ouiApi';
 import { Ionicons } from '@expo/vector-icons';
 import { Asset } from 'expo-asset';
 import Constants from 'expo-constants';
@@ -41,25 +41,30 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 /* ─── API helpers ─── */
-const getApiUrl = () => {
+const TRY_ON_PATH = '/api/try-on';
+const PREPROCESS_PATH = '/api/preprocess-person';
+const ML_URL_CONFIG_PATH = '/api/admin/ml-url';
+
+const getFallbackMlBaseUrl = () => {
   const envApiUrl = Constants.expoConfig?.extra?.API_URL;
-  if (envApiUrl) return envApiUrl;
+  if (typeof envApiUrl === 'string' && envApiUrl.length > 0) {
+    return envApiUrl
+      .replace(/\/api\/try-on\/?$/, '')
+      .replace(/\/api\/preprocess-person\/?$/, '')
+      .replace(/\/$/, '');
+  }
   if (__DEV__) {
     if (Platform.OS === 'android') {
       const hostUri = Constants.expoConfig?.hostUri;
-      if (hostUri) return `http://${hostUri.split(':')[0]}:8000/api/try-on`;
-      return 'http://10.0.2.2:8000/api/try-on';
+      if (hostUri) return `http://${hostUri.split(':')[0]}:8000`;
+      return 'http://10.0.2.2:8000';
     }
-    if (Platform.OS === 'ios') return 'http://localhost:8000/api/try-on';
+    if (Platform.OS === 'ios') return 'http://localhost:8000';
   }
   const hostUri = Constants.expoConfig?.hostUri;
-  if (hostUri) return `http://${hostUri.split(':')[0]}:8000/api/try-on`;
-  return 'http://localhost:8000/api/try-on';
+  if (hostUri) return `http://${hostUri.split(':')[0]}:8000`;
+  return 'http://localhost:8000';
 };
-const API_URL = getApiUrl();
-const API_BASE_URL = API_URL.replace('/api/try-on', '');
-const TRY_ON_URL = `${API_BASE_URL}/api/try-on`;
-const HEALTH_URL = `${API_BASE_URL}/health`;
 const TRY_ON_TIMEOUT_MS = 180000;
 const API_HEADERS: Record<string, string> = {
   'User-Agent': 'VirtualTryOn/1.0 (Android)',
@@ -74,6 +79,8 @@ function logError(tag: string, e: unknown, context?: Record<string, unknown>) {
 function toUserSafeTryOnError(e: unknown): string {
   const raw = e instanceof Error ? e.message : String(e ?? '');
   const msg = raw.toLowerCase();
+  if (msg.includes('could not prepare background-removed base image'))
+    return 'Could not prepare your photo for try-on. Please retake your photo in good lighting and try again.';
   if (msg.includes('cannot identify image file') || msg.includes('invalid response: no image'))
     return 'Could not process this clothing image. Try another item.';
   if (msg.includes('network request failed') || msg.includes('failed to fetch'))
@@ -106,14 +113,28 @@ type UiClothItem = {
   image: number | string;
   categoryId?: number;
   categoryName?: string;
+  variantId?: number;
 };
 
 function inferClothTypeFromProduct(p: OuiSellerProduct): ClothType {
   const t = p.cloth_type?.toLowerCase();
   if (t === 'upper' || t === 'lower' || t === 'overall') return t;
   const cat = (p.category as any)?.name?.toLowerCase?.() ?? '';
-  if (cat.includes('dress')) return 'overall';
-  if (cat.includes('pant') || cat.includes('jeans') || cat.includes('lower')) return 'lower';
+  const name = (p.name ?? (p as any)?.short_name ?? '').toString().toLowerCase();
+  const haystack = `${cat} ${name}`;
+  if (
+    haystack.includes('pant') ||
+    haystack.includes('jeans') ||
+    haystack.includes('lower') ||
+    haystack.includes('trouser') ||
+    haystack.includes('jogger') ||
+    haystack.includes('short') ||
+    haystack.includes('skirt') ||
+    haystack.includes('lehenga') ||
+    haystack.includes('salwar') ||
+    haystack.includes('palazzo')
+  ) return 'lower';
+  if (haystack.includes('dress') || haystack.includes('gown')) return 'overall';
   return 'upper';
 }
 
@@ -126,11 +147,14 @@ export default function TryOnScreen() {
     clothName?: string | string[];
     clothImageUrl?: string | string[];
     clothType?: string | string[];
+    variantId?: string | string[];
   }>();
   const clothId = normalizeParam(params?.clothId);
   const clothNameParam = normalizeParam(params?.clothName);
   const clothTypeParam = normalizeParam(params?.clothType);
   const clothImageUrl = normalizeParam(params?.clothImageUrl);
+  const variantIdParam = params?.variantId ? normalizeParam(params.variantId) : null;
+  const variantId = variantIdParam && /^\d+$/.test(variantIdParam) ? Number(variantIdParam) : undefined;
   const clothingItem = CLOTHING_ITEMS.find((i) => i.id === clothId) ?? null;
   const clothTypeFromParams =
     clothTypeParam === 'upper' || clothTypeParam === 'lower' || clothTypeParam === 'overall' ? clothTypeParam : null;
@@ -143,8 +167,11 @@ export default function TryOnScreen() {
   const [clothsLoading, setClothsLoading] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
   const selectedClothRef = useRef<{ id: string; cloth_type: ClothType; image: number | string; name: string } | null>(null);
-  const lastTryClothTypeRef = useRef<ClothType | null>(null);
   const pendingApplyRef = useRef<{ clothType: ClothType; cloth: UiClothItem | null } | null>(null);
+  /** Raw capture URI for this session — upper/overall try-on always uses this (bg-removed prep via preprocess), never a previous result. */
+  const originalCaptureUriRef = useRef<string | null>(null);
+  /** File URI of last successful upper/overall try-on; lower try-ons use this so pants run on the shirt output, not on chained lower outputs. */
+  const upperSnapshotFileUriRef = useRef<string | null>(null);
 
   /* ─── strip state ─── */
   const [comboMode, setComboMode] = useState<boolean>(false);
@@ -156,8 +183,8 @@ export default function TryOnScreen() {
   const [loading, setLoading] = useState(false);
   const [preprocessingLoading, setPreprocessingLoading] = useState(false);
   const [preprocessingCacheKey, setPreprocessingCacheKey] = useState<string | null>(null);
-  const [preprocessingClothType, setPreprocessingClothType] = useState<ClothType | null>(null);
   const [basePersonUri, setBasePersonUri] = useState<string | null>(null);
+  const basePersonUriRef = useRef<string | null>(null);
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [tryOnError, setTryOnError] = useState<string | null>(null);
   const [resultCache, setResultCache] = useState<Record<string, string>>({});
@@ -166,10 +193,41 @@ export default function TryOnScreen() {
   const [shareError, setShareError] = useState<string | null>(null);
   const [CameraComponent, setCameraComponent] = useState<React.ComponentType<any> | null>(null);
   const [cameraLoadError, setCameraLoadError] = useState<string | null>(null);
+  const preprocessCacheRef = useRef<Record<string, string>>({});
+  const [mlBaseUrl, setMlBaseUrl] = useState<string>(getFallbackMlBaseUrl());
+  const [mlConfigReady, setMlConfigReady] = useState(false);
   const { addToCart, refreshCart, ensureCart } = useKioskCart();
 
   const [autoTryRequestedUri, setAutoTryRequestedUri] = useState<string | null>(null);
   const [autoTryPending, setAutoTryPending] = useState(false);
+
+  const tryOnUrl = `${mlBaseUrl}${TRY_ON_PATH}`;
+  const preprocessUrl = `${mlBaseUrl}${PREPROCESS_PATH}`;
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const configRes = await fetch(`${getOuiBaseUrl()}${ML_URL_CONFIG_PATH}`, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+        });
+        if (!configRes.ok) return;
+        const data = await configRes.json();
+        const baseUrl = data?.data?.base_url;
+        if (mounted && typeof baseUrl === 'string' && baseUrl.length > 0) {
+          setMlBaseUrl(baseUrl.replace(/\/$/, ''));
+        }
+      } catch (_) {
+        // keep fallback URL
+      } finally {
+        if (mounted) setMlConfigReady(true);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   /* ─── Load products ─── */
   useEffect(() => {
@@ -183,15 +241,46 @@ export default function TryOnScreen() {
         const res = await getSellerProducts({ sellerId, page: 1, perPage: 60, accessToken: session?.accessToken ?? '' });
         if (!mounted) return;
         const products = Array.isArray(res?.products) ? res.products : [];
-        const mapped: UiClothItem[] = products
-          .filter((p) => Boolean(p) && typeof (p as any).id !== 'undefined')
-          .map((p) => {
-            const id = String((p as any).id);
-            const name = typeof p.name === 'string' && p.name.length > 0 ? p.name : 'Item';
-            const imgPath = (p as any).thumb_image ?? (p as any).image;
-            const image = typeof imgPath === 'string' ? (imgPath.startsWith('http') ? imgPath : (getOuiAssetUrl(imgPath) ?? '')) : '';
-            return { id, name, cloth_type: inferClothTypeFromProduct(p), image: image || 'https://via.placeholder.com/512x512.png?text=Cloth', categoryId: p.category?.id as number | undefined, categoryName: p.category?.name };
-          });
+        const mapped: UiClothItem[] = [];
+        for (const p of products) {
+          if (!p || typeof (p as any).id === 'undefined') continue;
+          const pid = String((p as any).id);
+          const baseName = typeof p.name === 'string' && p.name.length > 0 ? p.name : 'Item';
+          const clothType = inferClothTypeFromProduct(p);
+          const catId = p.category?.id as number | undefined;
+          const catName = p.category?.name;
+
+          // Expand color variants with their own images into separate strip items
+          const variants = Array.isArray(p.varient_item_details) ? p.varient_item_details : [];
+          const colorVariants = variants.filter((v) => v.image && v.color);
+          if (colorVariants.length > 0) {
+            // Deduplicate by color — use first variant per color
+            const seenColors = new Set<string>();
+            for (const v of colorVariants) {
+              const colorKey = (v.color ?? '').trim().toLowerCase();
+              if (seenColors.has(colorKey)) continue;
+              seenColors.add(colorKey);
+              const vImg = v.image!;
+              const image = vImg.startsWith('http') ? vImg : (getOuiAssetUrl(vImg) ?? '');
+              if (!image) continue;
+              mapped.push({
+                id: `${pid}_v${v.id}`,
+                name: `${baseName} — ${v.color}`,
+                cloth_type: clothType,
+                image,
+                categoryId: catId,
+                categoryName: catName,
+                variantId: v.id,
+              });
+            }
+          }
+          // Always add the base product image as a fallback entry
+          const imgPath = (p as any).image ?? (p as any).thumb_image;
+          const baseImage = typeof imgPath === 'string' ? (imgPath.startsWith('http') ? imgPath : (getOuiAssetUrl(imgPath) ?? '')) : '';
+          if (baseImage) {
+            mapped.push({ id: pid, name: baseName, cloth_type: clothType, image: baseImage, categoryId: catId, categoryName: catName });
+          }
+        }
         setAvailableCloths(mapped.length > 0 ? mapped : null);
       } catch { if (mounted) setAvailableCloths(null); }
       finally { if (mounted) setClothsLoading(false); }
@@ -239,6 +328,10 @@ export default function TryOnScreen() {
     return () => clearInterval(id);
   }, [loading, preprocessingLoading]);
 
+  useEffect(() => {
+    basePersonUriRef.current = basePersonUri;
+  }, [basePersonUri]);
+
   /* ─── lazy load camera ─── */
   useEffect(() => {
     if (CameraComponent) return;
@@ -267,22 +360,64 @@ export default function TryOnScreen() {
   }, [resultImage]);
 
   /* ─── preprocess person image ─── */
-  const preprocessPersonImage = async (photoUri: string, clothType: string = 'upper'): Promise<string | null> => {
-    setPreprocessingLoading(true);
-    setPreprocessingClothType((clothType === 'upper' || clothType === 'lower' || clothType === 'overall') ? clothType : null);
-    const preprocessUrl = `${API_BASE_URL}/api/preprocess-person`;
-    try {
-      const formData = new FormData();
-      formData.append('person_image', { uri: photoUri, type: 'image/jpeg', name: 'person.jpg' } as any);
-      formData.append('cloth_type', clothType);
-      const res = await fetch(preprocessUrl, { method: 'POST', headers: API_HEADERS, body: formData });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.success && data?.cache_key) { setPreprocessingCacheKey(data.cache_key); return data.cache_key as string; }
+  const preprocessPersonImage = useCallback(
+    async (photoUri: string, clothType: string = 'upper', opts?: { showLoading?: boolean }): Promise<string | null> => {
+      const showLoading = opts?.showLoading !== false;
+      const normalizedType: ClothType = clothType === 'lower' || clothType === 'overall' ? clothType : 'upper';
+      const cacheIndex = `${photoUri}::${normalizedType}`;
+      const existing = preprocessCacheRef.current[cacheIndex];
+      if (existing) return existing;
+
+      if (showLoading) setPreprocessingLoading(true);
+      try {
+        const formData = new FormData();
+        formData.append('person_image', { uri: photoUri, type: 'image/jpeg', name: 'person.jpg' } as any);
+        formData.append('cloth_type', normalizedType);
+        const res = await fetch(preprocessUrl, { method: 'POST', headers: API_HEADERS, body: formData });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.success && data?.cache_key) {
+            const key = data.cache_key as string;
+            preprocessCacheRef.current[cacheIndex] = key;
+            setPreprocessingCacheKey(key);
+            return key;
+          }
+        }
+      } catch (e) {
+        logError('PREPROCESS', e);
+      } finally {
+        if (showLoading) setPreprocessingLoading(false);
       }
-    } catch (e) { logError('PREPROCESS', e); }
-    finally { setPreprocessingLoading(false); }
-    return null;
+      return null;
+    },
+    [preprocessUrl],
+  );
+
+  /** Person image URI sent to preprocess/try-on: original capture for upper/overall; upper snapshot file for lower (combo) when available. */
+  const resolvePersonUriForTryOn = (clothType: ClothType): string | null => {
+    const original = originalCaptureUriRef.current ?? basePersonUri ?? capturedPhoto;
+    if (clothType === 'lower') {
+      const snap = upperSnapshotFileUriRef.current;
+      if (snap) return snap;
+      return original;
+    }
+    return original;
+  };
+
+  const writeDataUriToTempFile = async (dataUri: string): Promise<string | null> => {
+    try {
+      const base64 = dataUri.includes(',') ? dataUri.split(',')[1] : dataUri;
+      const isPng = dataUri.startsWith('data:image/png');
+      const ext = isPng ? 'png' : 'jpg';
+      const FileSystem = await import('expo-file-system/legacy');
+      const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
+      const fileUri = `${cacheDir}upper_snapshot_${Date.now()}.${ext}`;
+      await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+      return fileUri;
+    } catch (e) {
+      logError('WRITE_SNAPSHOT', e);
+      return null;
+    }
   };
 
   /* ─── run try-on ─── */
@@ -291,9 +426,9 @@ export default function TryOnScreen() {
     const clothIdForRequest = refCloth?.id ?? selectedClothId;
     const clothTypeVal = refCloth?.cloth_type ?? selectedClothType;
     const clothImageForRequest = refCloth?.image ?? selectedClothImage;
-    if (!(basePersonUri || capturedPhoto) || !clothImageForRequest) return;
-    const baseUriForCache = basePersonUri ?? capturedPhoto;
-    lastTryClothTypeRef.current = clothTypeVal;
+    const activePersonUri = resolvePersonUriForTryOn(clothTypeVal);
+    if (!activePersonUri || !clothImageForRequest) return;
+    const baseUriForCache = activePersonUri;
 
     const cacheKeyForResult = getResultCacheKey({ basePersonUri: baseUriForCache, clothId: clothIdForRequest, clothType: clothTypeVal });
     const cachedImage = resultCache[cacheKeyForResult];
@@ -303,22 +438,20 @@ export default function TryOnScreen() {
     setLoadingMessageIndex(0);
     setTryOnError(null);
 
-    let activeCacheKey: string | null = preprocessingCacheKey;
-    if (activeCacheKey && preprocessingClothType && preprocessingClothType !== clothTypeVal) {
-      const personUri = basePersonUri ?? capturedPhoto;
-      setPreprocessingCacheKey(null);
-      setPreprocessingClothType(null);
-      if (personUri) activeCacheKey = await preprocessPersonImage(personUri, clothTypeVal);
+    const preprocessIndex = `${activePersonUri}::${clothTypeVal}`;
+    let activeCacheKey: string | null = preprocessCacheRef.current[preprocessIndex] ?? null;
+    // BG removal is cached by base image + cloth type to avoid repeated quality loss
+    // while still using the correct segmentation mask for upper/lower/overall.
+    if (!activeCacheKey) {
+      activeCacheKey = await preprocessPersonImage(activePersonUri, clothTypeVal);
+    }
+    if (!activeCacheKey) {
+      throw new Error('Could not prepare background-removed base image. Please retake/upload photo and try again.');
     }
 
     try {
       const formData = new FormData();
-      if (activeCacheKey) {
-        formData.append('cache_key', activeCacheKey);
-      } else {
-        const personUri = basePersonUri ?? capturedPhoto;
-        formData.append('person_image', { uri: personUri, type: 'image/jpeg', name: 'person.jpg' } as any);
-      }
+      formData.append('cache_key', activeCacheKey);
       formData.append('cloth_type', clothTypeVal);
 
       const imageModule = clothImageForRequest ?? require('@/assets/clothes/colourfull-sweatshirt.jpg');
@@ -380,7 +513,7 @@ export default function TryOnScreen() {
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), TRY_ON_TIMEOUT_MS);
-      const response = await fetch(TRY_ON_URL, { method: 'POST', headers: API_HEADERS, body: formData, signal: controller.signal });
+      const response = await fetch(tryOnUrl, { method: 'POST', headers: API_HEADERS, body: formData, signal: controller.signal });
       clearTimeout(timeoutId);
 
       if (!response.ok) {
@@ -396,6 +529,10 @@ export default function TryOnScreen() {
       const imageUri = `data:${resultMime};base64,${data.imageBase64}`;
       setResultImage(imageUri);
       setResultCache((prev) => ({ ...prev, [cacheKeyForResult]: imageUri }));
+      if (clothTypeVal === 'upper' || clothTypeVal === 'overall') {
+        const snap = await writeDataUriToTempFile(imageUri);
+        if (snap) upperSnapshotFileUriRef.current = snap;
+      }
       setShareUrl(null);
       setShareError(null);
       setStep('result');
@@ -412,29 +549,42 @@ export default function TryOnScreen() {
   /* ─── auto try-on ─── */
   useEffect(() => {
     if (!autoTryPending || !autoTryRequestedUri) return;
+    if (!mlConfigReady) return;
     if (!clothId || clothId === '1' || !effectiveClothImage) return;
     if (loading || preprocessingLoading) return;
-    const currentPhotoUri = basePersonUri ?? capturedPhoto;
+    const currentPhotoUri = originalCaptureUriRef.current ?? basePersonUri ?? capturedPhoto;
     if (!currentPhotoUri || currentPhotoUri !== autoTryRequestedUri) return;
     setAutoTryPending(false);
     setAutoTryRequestedUri(null);
     const refCloth = selectedClothRef.current;
     if (refCloth) pendingApplyRef.current = { clothType: refCloth.cloth_type, cloth: { id: refCloth.id, name: refCloth.name, cloth_type: refCloth.cloth_type, image: refCloth.image } };
     runTryOn();
-  }, [autoTryPending, autoTryRequestedUri, capturedPhoto, basePersonUri, loading, preprocessingLoading, clothId, effectiveClothImage, selectedClothType]);
+  }, [autoTryPending, autoTryRequestedUri, capturedPhoto, basePersonUri, loading, preprocessingLoading, mlConfigReady, clothId, effectiveClothImage, selectedClothType]);
 
   /* ─── handlers ─── */
   const handlePhotoTaken = useCallback((uri: string) => {
     setCapturedPhoto(uri);
     setBasePersonUri(uri);
+    basePersonUriRef.current = uri;
+    originalCaptureUriRef.current = uri;
+    upperSnapshotFileUriRef.current = null;
     setResultImage(null);
     setPreprocessingCacheKey(null);
-    setPreprocessingClothType(null);
+    preprocessCacheRef.current = {};
     setResultCache({});
     setStep('preview');
-    preprocessPersonImage(uri, selectedClothType);
+    void (async () => {
+      setPreprocessingLoading(true);
+      try {
+        await preprocessPersonImage(uri, 'upper', { showLoading: false });
+        void preprocessPersonImage(uri, 'lower', { showLoading: false });
+        void preprocessPersonImage(uri, 'overall', { showLoading: false });
+      } finally {
+        setPreprocessingLoading(false);
+      }
+    })();
     if (clothId && clothId !== '1' && effectiveClothImage) { setAutoTryRequestedUri(uri); setAutoTryPending(true); }
-  }, [selectedClothType, clothId, effectiveClothImage]);
+  }, [clothId, effectiveClothImage, preprocessPersonImage]);
 
   const pickImage = async () => {
     try {
@@ -446,42 +596,32 @@ export default function TryOnScreen() {
         const uri = result.assets[0].uri;
         setCapturedPhoto(uri);
         setBasePersonUri(uri);
+        basePersonUriRef.current = uri;
+        originalCaptureUriRef.current = uri;
+        upperSnapshotFileUriRef.current = null;
         setResultImage(null);
         setPreprocessingCacheKey(null);
-        setPreprocessingClothType(null);
+        preprocessCacheRef.current = {};
         setResultCache({});
         setStep('preview');
-        preprocessPersonImage(uri, selectedClothType);
+        void (async () => {
+          setPreprocessingLoading(true);
+          try {
+            await preprocessPersonImage(uri, 'upper', { showLoading: false });
+            void preprocessPersonImage(uri, 'lower', { showLoading: false });
+            void preprocessPersonImage(uri, 'overall', { showLoading: false });
+          } finally {
+            setPreprocessingLoading(false);
+          }
+        })();
         if (clothId && clothId !== '1' && effectiveClothImage) { setAutoTryRequestedUri(uri); setAutoTryPending(true); }
       }
     } catch (e) { Alert.alert('Error', e instanceof Error ? e.message : String(e)); }
   };
 
-  const promoteResultToBase = async () => {
-    if (!resultImage) return;
-    try {
-      const base64 = resultImage.includes(',') ? resultImage.split(',')[1] : resultImage;
-      const FileSystem = await import('expo-file-system/legacy');
-      const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
-      const fileUri = `${cacheDir}person_base_${Date.now()}.jpg`;
-      await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
-      setResultImage(null);
-      setBasePersonUri(fileUri);
-      setPreprocessingCacheKey(null);
-      setPreprocessingClothType(null);
-      setTryOnError(null);
-      setResultCache({});
-      preprocessPersonImage(fileUri, 'lower');
-      setStep('preview');
-    } catch (e) { logError('PROMOTE_RESULT', e); Alert.alert('Error', 'Could not prepare the combo try-on base image.'); }
-  };
-
   const handleSelectCloth = async (it: UiClothItem) => {
-    if (loading || preprocessingLoading) return;
+    if (loading) return;
     const hasPerson = Boolean(basePersonUri || capturedPhoto);
-    const lastTryType = lastTryClothTypeRef.current;
-    const shouldAutoLayer = Boolean(resultImage) && Boolean(lastTryType) && it.cloth_type !== lastTryType;
-    if (shouldAutoLayer) await promoteResultToBase();
     setSelectedClothId(it.id);
     selectedClothRef.current = { id: it.id, cloth_type: it.cloth_type, image: it.image, name: it.name };
     setTryOnError(null);
@@ -492,22 +632,34 @@ export default function TryOnScreen() {
   };
 
   const handleTryLook = () => {
+    if (!mlConfigReady) {
+      Alert.alert('Please wait', 'Initializing try-on service...');
+      return;
+    }
     pendingApplyRef.current = { clothType: selectedClothType, cloth: selectedCloth };
     runTryOn();
   };
 
-  const canAddToCart = Boolean(selectedCloth && /^\d+$/.test(selectedClothId));
+  /** Extract the real product ID from a cloth id (which may be "123" or "123_v456" for variant items). */
+  const getProductIdFromClothId = (cid: string): number | null => {
+    const match = cid.match(/^(\d+)/);
+    return match ? Number(match[1]) : null;
+  };
+  const canAddToCart = Boolean(selectedCloth && getProductIdFromClothId(selectedClothId) != null);
   const handleAddToCart = async () => {
     if (!canAddToCart) return;
+    const realPid = getProductIdFromClothId(selectedClothId);
+    if (realPid == null) return;
     try {
-      await addToCart(Number(selectedClothId), 1);
+      await addToCart(realPid, 1, { variant_id: selectedCloth?.variantId });
       Alert.alert('Added', 'Item added to cart.');
     } catch (e) { Alert.alert('Error', e instanceof Error ? e.message : 'Could not add to cart.'); }
   };
 
-  const canShareLook = Boolean(resultImage && /^\d+$/.test(selectedClothId));
+  const canShareLook = Boolean(resultImage && getProductIdFromClothId(selectedClothId) != null);
   const handleShareLook = async () => {
-    if (!resultImage || !/^\d+$/.test(selectedClothId)) return;
+    const sharePid = getProductIdFromClothId(selectedClothId);
+    if (!resultImage || sharePid == null) return;
     setSharing(true);
     setShareError(null);
     try {
@@ -528,7 +680,7 @@ export default function TryOnScreen() {
       const uploadRes = await kioskUploadImage('tryon_images', fileUri, mime2);
       const path = uploadRes?.data?.path ?? uploadRes?.data?.full_url;
       if (!path) throw new Error('Upload did not return path');
-      const startRes = await kioskTryonStart(currentCartId, Number(selectedClothId), path);
+      const startRes = await kioskTryonStart(currentCartId, sharePid, path, selectedCloth?.variantId ?? variantId);
       const sessionId = startRes?.data?.id;
       if (sessionId == null) throw new Error('Try-on start did not return session id');
       const shareRes = await kioskTryonShare(sessionId);
@@ -543,6 +695,9 @@ export default function TryOnScreen() {
     if (step === 'preview' || step === 'result') {
       setCapturedPhoto(null);
       setBasePersonUri(null);
+      basePersonUriRef.current = null;
+      originalCaptureUriRef.current = null;
+      upperSnapshotFileUriRef.current = null;
       setResultImage(null);
       setStep('camera');
     } else {
@@ -553,9 +708,12 @@ export default function TryOnScreen() {
   const resetToCamera = () => {
     setCapturedPhoto(null);
     setBasePersonUri(null);
+    basePersonUriRef.current = null;
+    originalCaptureUriRef.current = null;
+    upperSnapshotFileUriRef.current = null;
     setResultImage(null);
     setPreprocessingCacheKey(null);
-    setPreprocessingClothType(null);
+    preprocessCacheRef.current = {};
     setTryOnError(null);
     setResultCache({});
     setStep('camera');
@@ -693,7 +851,9 @@ export default function TryOnScreen() {
 
         {comboMode && (
           <View style={s.comboHint}>
-            <Text style={s.comboHintText}>Combo: Try upper first, then select a lower</Text>
+            <Text style={s.comboHintText}>
+              Combo: try a top first, then bottoms — pants use that top result; new tops always use your original photo.
+            </Text>
           </View>
         )}
 
@@ -735,9 +895,9 @@ export default function TryOnScreen() {
             <Ionicons name="images-outline" size={20} color="#2D3335" />
           </TouchableOpacity>
           {canTryOn && (
-            <TouchableOpacity onPress={handleTryLook} style={s.tryOnBtn} activeOpacity={0.85} disabled={loading || preprocessingLoading}>
+            <TouchableOpacity onPress={handleTryLook} style={s.tryOnBtn} activeOpacity={0.85} disabled={loading}>
               <LinearGradient colors={['#575E7C', '#D5DBFF']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.tryOnBtnGrad}>
-                {loading || preprocessingLoading ? <ActivityIndicator size="small" color="#fff" /> : (
+                {loading ? <ActivityIndicator size="small" color="#fff" /> : (
                   <>
                     <Ionicons name="sparkles" size={18} color="#fff" />
                     <Text style={s.tryOnBtnText}>Try On</Text>

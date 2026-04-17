@@ -262,6 +262,8 @@ export function CameraStep({ onPhotoTaken, onBack, onPickImage, clothItems, sele
   );
 }
 
+export default CameraStep;
+
 const VIEWFINDER_W = SCREEN_WIDTH * 0.84;
 const VIEWFINDER_H = VIEWFINDER_W * 1.33;
 

@@ -213,6 +213,19 @@ export type OuiSellerProductCategory = {
   image?: string;
 };
 
+export type OuiVariantItemDetail = {
+  id: number;
+  product_id: number;
+  name?: string;
+  color?: string;
+  color_code?: string;
+  size?: string;
+  qty?: number;
+  price?: number;
+  offer_price?: number | null;
+  image?: string;
+};
+
 export type OuiSellerProduct = {
   id: number;
   name: string;
@@ -225,6 +238,7 @@ export type OuiSellerProduct = {
   qty?: number;
   cloth_type?: string | null;
   category?: OuiSellerProductCategory | null;
+  varient_item_details?: OuiVariantItemDetail[];
   [key: string]: unknown;
 };
 
