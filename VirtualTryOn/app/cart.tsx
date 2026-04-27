@@ -1,7 +1,8 @@
 import { FontFamily } from '@/constants/theme';
 import { useKioskCart } from '@/context/KioskCartContext';
+import { getSession } from '@/lib/auth';
 import type { KioskCartItem } from '@/lib/kioskApi';
-import { getOuiAssetUrl } from '@/lib/ouiApi';
+import { getOuiAssetUrl, getSellerProducts, type OuiVariantItemDetail } from '@/lib/ouiApi';
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -30,13 +31,36 @@ function getItemImageUrl(item: KioskCartItem): string | null {
   return getOuiAssetUrl(img) ?? null;
 }
 
-function firstVariant(value: unknown): string | undefined {
-  if (Array.isArray(value)) {
-    const v = value.find((x) => String(x).trim().length > 0);
-    return v != null ? String(v) : undefined;
+/** Extract a list of values from API field that may be array, comma-separated string, or single value. */
+function toList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((x) => String(x).trim()).filter(Boolean);
+  if (typeof value === 'string') return value.split(',').map((s) => s.trim()).filter(Boolean);
+  if (typeof value === 'number') return [String(value)];
+  return [];
+}
+
+/** Pull color list from a cart item across the various shapes the API may return. */
+function getItemColors(item: any): string[] {
+  const direct = toList(item?.colors ?? item?.color);
+  if (direct.length > 0) return direct;
+  const variant = item?.variant ?? item?.variant_item ?? item?.varient_item ?? item?.product_variant;
+  if (variant) {
+    const fromVariant = toList(variant?.colors ?? variant?.color);
+    if (fromVariant.length > 0) return fromVariant;
   }
-  if (typeof value === 'string' && value.trim().length > 0) return value.trim();
-  return undefined;
+  return [];
+}
+
+/** Pull size list from a cart item across the various shapes the API may return. */
+function getItemSizes(item: any): string[] {
+  const direct = toList(item?.sizes ?? item?.size);
+  if (direct.length > 0) return direct;
+  const variant = item?.variant ?? item?.variant_item ?? item?.varient_item ?? item?.product_variant;
+  if (variant) {
+    const fromVariant = toList(variant?.sizes ?? variant?.size);
+    if (fromVariant.length > 0) return fromVariant;
+  }
+  return [];
 }
 
 export default function CartScreen() {
@@ -53,6 +77,34 @@ export default function CartScreen() {
   const [sendLoading, setSendLoading] = useState(false);
 
   const canSendToStore = useMemo(() => Boolean(cartUuid && cartUuid.length > 0), [cartUuid]);
+
+  // Look up variant details from the seller's product list and build a map keyed by variant_id.
+  // The cart API returns variant_id but not color/size — we resolve those from varient_item_details.
+  const [variantMap, setVariantMap] = useState<Map<number, OuiVariantItemDetail>>(new Map());
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const session = await getSession();
+        if (!session?.user?.id) return;
+        const res = await getSellerProducts({
+          sellerId: session.user.id,
+          page: 1,
+          perPage: 100,
+          accessToken: session.accessToken ?? null,
+        });
+        if (!mounted) return;
+        const next = new Map<number, OuiVariantItemDetail>();
+        for (const p of res?.products ?? []) {
+          for (const v of p.varient_item_details ?? []) {
+            if (v?.id != null) next.set(v.id, v);
+          }
+        }
+        setVariantMap(next);
+      } catch {}
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   async function sendToStoreApi(args: { cartUuid: string; name: string; phone: string; email?: string }) {
     const response = await fetch('https://oui.corescent.in/api/kiosk/proceed-to-store', {
@@ -111,8 +163,8 @@ export default function CartScreen() {
           const item = items.find((i) => i.product_id === productId);
           removeFromCart(productId, undefined, {
             variant_id: item?.variant_id,
-            remove_size: firstVariant(item?.sizes),
-            remove_color: firstVariant(item?.colors),
+            remove_size: getItemSizes(item ?? {})[0],
+            remove_color: getItemColors(item ?? {})[0],
           });
         },
       },
@@ -124,16 +176,18 @@ export default function CartScreen() {
     if (qty <= 1) { handleRemove(item.product_id); return; }
     await removeFromCart(item.product_id, 1, {
       variant_id: item.variant_id,
-      remove_size: firstVariant(item.sizes),
-      remove_color: firstVariant(item.colors),
+      remove_size: getItemSizes(item)[0],
+      remove_color: getItemColors(item)[0],
     });
   };
 
   const handleQuantityPlus = async (item: KioskCartItem) => {
+    const firstSize = getItemSizes(item)[0];
+    const firstColor = getItemColors(item)[0];
     await addToCart(item.product_id, 1, {
       variant_id: item.variant_id,
-      sizes: firstVariant(item.sizes) ? [firstVariant(item.sizes) as string] : undefined,
-      colors: firstVariant(item.colors) ? [firstVariant(item.colors) as string] : undefined,
+      sizes: firstSize ? [firstSize] : undefined,
+      colors: firstColor ? [firstColor] : undefined,
     });
   };
 
@@ -194,8 +248,19 @@ export default function CartScreen() {
               const qty = typeof item.quantity === 'number' ? item.quantity : parseInt(String(item.quantity), 10) || 1;
               const price = typeof item.price === 'number' ? item.price : parseFloat(String(item.price || 0)) || 0;
               const total = typeof item.total === 'number' ? item.total : price * qty;
-              const imageUrl = getItemImageUrl(item);
               const name = item.name || `Product #${item.product_id}`;
+
+              // Resolve variant details from the variant map first; fall back to whatever the cart row carries.
+              const variant = item.variant_id != null ? variantMap.get(item.variant_id) : undefined;
+              const variantColors = variant?.color ? [variant.color] : getItemColors(item);
+              const variantSizes = variant?.size ? [variant.size] : getItemSizes(item);
+              const variantColorCode = variant?.color_code;
+              const variantImage = variant?.image
+                ? (variant.image.startsWith('http') ? variant.image : getOuiAssetUrl(variant.image))
+                : null;
+              const imageUrl = variantImage ?? getItemImageUrl(item);
+              const colors = variantColors;
+              const sizes = variantSizes;
               return (
                 <View key={`cart-${index}-${item.product_id}-${item.variant_id ?? 'base'}`} style={st.itemCard}>
                   <View style={st.itemImgWrap}>
@@ -209,23 +274,43 @@ export default function CartScreen() {
                   </View>
                   <View style={st.itemInfo}>
                     <Text style={st.itemName} numberOfLines={2}>{name}</Text>
-                    {((Array.isArray(item.colors) && item.colors.length > 0) || (Array.isArray(item.sizes) && item.sizes.length > 0)) && (
-                      <View style={st.variantTagsRow}>
-                        {Array.isArray(item.colors) && item.colors.filter(Boolean).map((c, ci) => (
-                          <View key={`clr-${ci}`} style={st.variantTag}>
-                            <View style={[st.variantTagDot, { backgroundColor: c.toLowerCase() }]} />
-                            <Text style={st.variantTagText}>{c}</Text>
-                          </View>
-                        ))}
-                        {Array.isArray(item.sizes) && item.sizes.filter(Boolean).map((s, si) => (
-                          <View key={`sz-${si}`} style={st.variantTag}>
-                            <Ionicons name="resize-outline" size={11} color="#575E7C" />
-                            <Text style={st.variantTagText}>{s}</Text>
-                          </View>
-                        ))}
+
+                    {/* Variant detail rows */}
+                    {colors.length > 0 && (
+                      <View style={st.detailRow}>
+                        <Text style={st.detailLabel}>Color</Text>
+                        <View style={st.detailValueRow}>
+                          {colors.map((c, ci) => (
+                            <View key={`clr-${ci}`} style={st.variantTag}>
+                              <View style={[st.variantTagDot, { backgroundColor: variantColorCode || c.toLowerCase() }]} />
+                              <Text style={st.variantTagText}>{c}</Text>
+                            </View>
+                          ))}
+                        </View>
                       </View>
                     )}
-                    {price > 0 && <Text style={st.itemPrice}>₹{total.toFixed(0)}</Text>}
+                    {sizes.length > 0 && (
+                      <View style={st.detailRow}>
+                        <Text style={st.detailLabel}>Size</Text>
+                        <View style={st.detailValueRow}>
+                          {sizes.map((s, si) => (
+                            <View key={`sz-${si}`} style={st.variantTag}>
+                              <Ionicons name="resize-outline" size={11} color="#575E7C" />
+                              <Text style={st.variantTagText}>{s}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      </View>
+                    )}
+
+                    {/* Price block: unit × qty = line total */}
+                    {price > 0 && (
+                      <View style={st.priceBlock}>
+                        <Text style={st.unitPriceText}>₹{price.toFixed(0)} <Text style={st.unitPriceMul}>× {qty}</Text></Text>
+                        <Text style={st.itemPrice}>₹{total.toFixed(0)}</Text>
+                      </View>
+                    )}
+
                     <View style={st.qtyRow}>
                       <View style={st.stepper}>
                         <TouchableOpacity onPress={() => handleQuantityMinus(item)} style={st.stepperBtn} activeOpacity={0.8}>
@@ -404,7 +489,27 @@ const st = StyleSheet.create({
   itemInfo: { flex: 1, marginLeft: 14, justifyContent: 'center' },
   itemBrand: { fontSize: 9, fontFamily: FontFamily.bodySemiBold, color: '#9BA1A6', letterSpacing: 1.5, marginBottom: 2 },
   itemName: { fontSize: 15, fontFamily: FontFamily.heading, color: '#2D3335', marginBottom: 4 },
-  itemPrice: { fontSize: 15, fontFamily: FontFamily.bodyBold, color: '#575E7C', marginBottom: 8 },
+  itemPrice: { fontSize: 15, fontFamily: FontFamily.bodyBold, color: '#575E7C' },
+  detailRow: {
+    flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 8,
+  },
+  detailLabel: {
+    fontSize: 11, fontFamily: FontFamily.bodySemiBold, color: '#9BA1A6',
+    letterSpacing: 0.5, textTransform: 'uppercase', minWidth: 56,
+  },
+  detailValueRow: {
+    flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 6,
+  },
+  priceBlock: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginTop: 8, marginBottom: 8,
+  },
+  unitPriceText: {
+    fontSize: 12, fontFamily: FontFamily.body, color: '#5A6062',
+  },
+  unitPriceMul: {
+    fontSize: 12, fontFamily: FontFamily.bodySemiBold, color: '#9BA1A6',
+  },
   variantTagsRow: {
     flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8,
   },

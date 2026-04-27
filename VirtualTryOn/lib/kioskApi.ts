@@ -57,7 +57,9 @@ export async function kioskCreateCart(vendorId: number, timestamp?: number): Pro
   return res.json();
 }
 
-/** POST /api/kiosk/cart/add-product */
+/** POST /api/kiosk/cart/add-product
+ *  variant_id is always sent (0 = "no variant") to satisfy the server controller,
+ *  which references $variant unconditionally and 500s when the field is absent. */
 export async function kioskAddProduct(
   cartUuid: string,
   productId: number,
@@ -69,11 +71,15 @@ export async function kioskAddProduct(
     cart_uuid: string;
     product_id: number;
     quantity: number;
-    variant_id?: number;
+    variant_id: number;
     sizes?: string;
     colors?: string;
-  } = { cart_uuid: cartUuid, product_id: productId, quantity };
-  if (options?.variant_id != null) body.variant_id = options.variant_id;
+  } = {
+    cart_uuid: cartUuid,
+    product_id: productId,
+    quantity,
+    variant_id: options?.variant_id ?? 0,
+  };
   if (options?.sizes?.length) body.sizes = options.sizes.join(',');
   if (options?.colors?.length) body.colors = options.colors.join(',');
   const res = await fetch(url, {
@@ -81,7 +87,20 @@ export async function kioskAddProduct(
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const raw = await res.text();
+    let friendly = `HTTP ${res.status}`;
+    try {
+      const parsed = JSON.parse(raw);
+      friendly = parsed?.message || parsed?.error || friendly;
+    } catch {
+      friendly = raw.slice(0, 200) || friendly;
+    }
+    if (/undefined variable\s*\$?variant/i.test(friendly)) {
+      friendly = 'This product cannot be added without a size or color selection.';
+    }
+    throw new Error(friendly);
+  }
   return res.json();
 }
 
